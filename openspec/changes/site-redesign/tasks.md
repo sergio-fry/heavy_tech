@@ -20,8 +20,8 @@
 ## 4. Сборка и выкатка
 
 - [x] 4.1 `go vet ./...`, `gofmt -l .` чисты; `go test ./...` зелёный; smoke-прогон `scripts/smoke.sh` (проверяет страницу, фид, API, рескан)
-- [ ] 4.2 Коммит и пуш heavy_tech; ручная проверка дизайна на тестовых выпусках (обе темы через prefers-color-scheme, плеер, копирование)
-- [ ] 4.3 Выкат: bump `heavytech_git_ref` в infra-роли на новый SHA → `make run --limit heavytech` → проверка https://heavytech.udalovs.ru/ (страница, OG-теги curl-ом)
+- [x] 4.2 Коммит и пуш heavy_tech; ручная проверка дизайна на тестовых выпусках (обе темы через prefers-color-scheme, плеер, копирование)
+- [x] 4.3 Выкат: bump `heavytech_git_ref` в infra-роли на новый SHA → `make run --limit heavytech` → проверка https://heavytech.udalovs.ru/ (страница, OG-теги curl-ом)
 
 ## Workflow follow-up
 
