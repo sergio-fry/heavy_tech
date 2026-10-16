@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px;
+         margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; background: #fafafa; }
+  header { border-bottom: 2px solid #e2e2e2; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+  header h1 { margin: 0 0 .35rem; font-size: 1.6rem; }
+  header a { color: #666; font-size: .9rem; text-decoration: none; }
+  header a:hover { color: #111; }
+  .ep { background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
+        padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .ep h2 { margin: 0 0 .3rem; font-size: 1.15rem; }
+  .meta { color: #777; font-size: .85rem; margin-bottom: .4rem; }
+  .ep p { margin: .5rem 0; line-height: 1.45; }
+  audio { width: 100%; margin-top: .5rem; }
+  .empty { color: #777; text-align: center; padding: 3rem 0; line-height: 1.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{.Title}}</h1>
+  <a href="{{.FeedURL}}">RSS-фид для подкаст-приложений</a>
+</header>
+
+{{if not .Episodes}}
+<div class="empty">
+  Эпизодов пока нет.<br>
+  Положите MP3 в папку подкастов и вызовите <code>POST /admin/rescan</code>.
+</div>
+{{else}}
+{{range .Episodes}}
+<article class="ep">
+  <h2>{{.Title}}</h2>
+  <div class="meta">{{.DateLabel}}{{if .DurationLabel}} · {{.DurationLabel}}{{end}} ·
+    Скачиваний: {{.Downloads}} · Прослушиваний: {{.Plays}}</div>
+  {{if .Description}}<p>{{.Description}}</p>{{end}}
+  <audio controls preload="none" data-slug="{{.Slug}}" src="{{.AudioURL}}"></audio>
+</article>
+{{end}}
+{{end}}
+
+<script>
+document.querySelectorAll('audio[data-slug]').forEach(function (a) {
+  var sent = false;
+  a.addEventListener('play', function () {
+    if (sent) { return; }
+    sent = true;
+    fetch('/track/play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: a.dataset.slug }),
+      keepalive: true
+    }).catch(function () {});
+  });
+});
+</script>
+</body>
+</html>
