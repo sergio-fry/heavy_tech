@@ -1,0 +1,10 @@
+# Контекст сборки — только исходники
+heavytech
+data/
+tmp/
+scripts/
+test-fixtures/
+openspec/
+.pi/
+.gitignore
+README.md
