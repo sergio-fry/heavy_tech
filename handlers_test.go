@@ -6,6 +6,8 @@ import (
 	"encoding/xml"
 	"io"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -274,7 +276,12 @@ func TestHomeShowsEpisode(t *testing.T) {
 		"Pervyy Vypusk",
 		"О чём этот подкаст",
 		`data-slug="pervyy-vypusk"`,
-		`<audio controls preload="none"`,
+		`data-duration="1872"`,
+		"1 октября 2026", // дата словами
+		`<button class="play js-play"`,
+		`class="track js-track"`,
+		`class="btn js-copy-rss"`,
+		`js-latest" data-slug="vtoroy"`, // кнопка последнего выпуска
 		"/feed.xml",
 		"Скачиваний: 0",
 		"31:12", // 1872 c
@@ -282,6 +289,9 @@ func TestHomeShowsEpisode(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("в HTML нет %q", want)
 		}
+	}
+	if strings.Contains(html, `<audio controls`) || strings.Contains(html, ` controls`) {
+		t.Fatal("на странице есть нативный controls у аудио")
 	}
 	// новые сверху: vtoroy встречается раньше pervyy-vypusk
 	if strings.Index(html, "Vtoroy") > strings.Index(html, "Pervyy Vypusk") {
@@ -302,8 +312,210 @@ func TestHomeEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	html := rec.Body.String()
-	if !strings.Contains(html, "Эпизодов пока нет") || !strings.Contains(html, "/feed.xml") {
+	if !strings.Contains(html, "Выпуски скоро появятся") || !strings.Contains(html, "/feed.xml") {
 		t.Fatal("нет заглушки пустого списка")
+	}
+	if strings.Contains(html, `<button class="play js-play"`) {
+		t.Fatal("в пустом состоянии не должно быть плееров")
+	}
+}
+
+// --- данные страницы (редизайн) ---
+
+func TestRussianDate(t *testing.T) {
+	tests := []struct {
+		when time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), "2 октября 2026"},
+		{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "1 января 2026"},
+		{time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC), "31 декабря 2026"},
+		{time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC), "15 марта 2026"},
+	}
+	for _, tt := range tests {
+		if got := russianDate(tt.when); got != tt.want {
+			t.Errorf("russianDate(%v) = %q, хотели %q", tt.when, got, tt.want)
+		}
+	}
+}
+
+func TestBuildPageData(t *testing.T) {
+	ep := func(slug, title string, at time.Time, dur int64) EpisodeView {
+		return EpisodeView{
+			Episode:   Episode{Slug: slug, Title: title, PublishedAt: at, DurationSeconds: dur},
+			Downloads: 5, Plays: 3,
+		}
+	}
+	views := []EpisodeView{
+		ep("vtoroy", "Vtoroy", time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), 0),
+		ep("pervyy-vypusk", "Pervyy Vypusk", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 1872),
+	}
+	ch := Channel{Title: "Heavy Tech", Description: "О тяжёлом", Image: "https://pod.example.com/cover.jpg"}
+	data := buildPageData(ch, "https://pod.example.com", views)
+
+	if data.Title != "Heavy Tech" || data.Description != "О тяжёлом" {
+		t.Fatalf("метаданные канала не попали в pageData: %+v", data)
+	}
+	if !data.HasImage || data.Image != ch.Image {
+		t.Fatalf("обложка канала: HasImage=%v Image=%q", data.HasImage, data.Image)
+	}
+	if data.FeedURL != "https://pod.example.com/feed.xml" || data.BaseURL != "https://pod.example.com" {
+		t.Fatalf("FeedURL %q BaseURL %q", data.FeedURL, data.BaseURL)
+	}
+	if data.LatestSlug != "vtoroy" {
+		t.Fatalf("LatestSlug %q, хотели slug новейшего эпизода", data.LatestSlug)
+	}
+	if len(data.Episodes) != 2 {
+		t.Fatalf("эпизодов %d, хотели 2", len(data.Episodes))
+	}
+	newest, oldest := data.Episodes[0], data.Episodes[1]
+	if newest.DateLabel != "15 октября 2026" {
+		t.Fatalf("дата словами %q", newest.DateLabel)
+	}
+	if oldest.DurationSeconds != 1872 || oldest.DurationLabel != "31:12" {
+		t.Fatalf("длительность: seconds=%d label=%q", oldest.DurationSeconds, oldest.DurationLabel)
+	}
+	if oldest.Number != 1 || newest.Number != 2 {
+		t.Fatalf("номера выпусков: oldest=%d newest=%d, хотели 1 и 2", oldest.Number, newest.Number)
+	}
+	if oldest.AudioURL != "https://pod.example.com/audio/pervyy-vypusk" {
+		t.Fatalf("AudioURL %q", oldest.AudioURL)
+	}
+
+	// без обложки HasImage=false, без эпизодов LatestSlug пустой
+	data = buildPageData(Channel{Title: "X"}, "https://pod.example.com", nil)
+	if data.HasImage || data.Image != "" || data.LatestSlug != "" {
+		t.Fatalf("пустой канал собран неверно: %+v", data)
+	}
+}
+
+// writeChannelWithImage — канал с заданной обложкой для тестов героя и OG.
+func writeChannelWithImage(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	const ch = `title: Heavy Tech
+description: Тестовый подкаст о тяжёлом
+author: Сергей
+email: sergey@example.com
+category: Technology
+explicit: false
+image: https://cdn.example.com/cover.jpg
+`
+	if err := os.WriteFile(filepath.Join(dir, "podcast.yaml"), []byte(ch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// serverOn — сервер поверх готовой папки и стора.
+func serverOn(t *testing.T, dir string, st *Store) *Server {
+	t.Helper()
+	ch, err := LoadChannel(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(Config{BaseURL: testBaseURL, PodcastDir: dir}, ch, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
+func homeHTML(t *testing.T, srv *Server) string {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+func TestHomeOpenGraphWithImage(t *testing.T) {
+	dir := writeChannelWithImage(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "2026-10-01", "pervyy-vypusk", "mp3data", nil)
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	html := homeHTML(t, serverOn(t, dir, st))
+	for _, want := range []string{
+		`property="og:title" content="Heavy Tech"`,
+		`property="og:description" content="Тестовый подкаст о тяжёлом"`,
+		`property="og:type" content="website"`,
+		`property="og:url" content="` + testBaseURL + `"`,
+		`property="og:image" content="https://cdn.example.com/cover.jpg"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("в HTML нет %q", want)
+		}
+	}
+}
+
+func TestHomeOpenGraphWithoutImage(t *testing.T) {
+	env := newTestEnv(t)
+	html := homeHTML(t, env.server)
+	if strings.Contains(html, "og:image") {
+		t.Fatal("og:image не должен выводиться без обложки")
+	}
+	for _, want := range []string{
+		`property="og:title" content="Heavy Tech"`,
+		`property="og:type" content="website"`,
+		`property="og:url" content="` + testBaseURL + `"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("в HTML нет %q", want)
+		}
+	}
+}
+
+func TestHomeOpenGraphEscaping(t *testing.T) {
+	dir := t.TempDir()
+	const ch = `title: Heavy "Tech" & <Co>
+description: О тяжёлом "и светлом"
+`
+	if err := os.WriteFile(filepath.Join(dir, "podcast.yaml"), []byte(ch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	html := homeHTML(t, serverOn(t, dir, newTestStore(t)))
+	if !strings.Contains(html, `content="Heavy &#34;Tech&#34; &amp; &lt;Co&gt;"`) {
+		t.Fatal("og:title не экранирован как HTML-атрибут")
+	}
+}
+
+func TestHomeHeroBlock(t *testing.T) {
+	dir := writeChannelWithImage(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "2026-10-01", "pervyy-vypusk", "aaa", nil)
+	writeEpisode(t, dir, "2026-10-15", "vtoroy", "bbb", nil)
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	html := homeHTML(t, serverOn(t, dir, st))
+	for _, want := range []string{
+		`class="cover" src="https://cdn.example.com/cover.jpg"`, // обложка из podcast.yaml
+		`js-latest" data-slug="vtoroy"`,                         // кнопка последнего выпуска
+		`<h1>Heavy Tech</h1>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("в герое нет %q", want)
+		}
+	}
+}
+
+func TestHomeCopyRSS(t *testing.T) {
+	env := newTestEnv(t)
+	html := homeHTML(t, env.server)
+	if !strings.Contains(html, `class="btn js-copy-rss" data-url="`+testBaseURL+`/feed.xml"`) {
+		t.Fatal("нет элемента копирования RSS с абсолютным URL фида")
+	}
+	// и в пустом состоянии копирование тоже доступно
+	dir := writePodcastDir(t)
+	html = homeHTML(t, serverOn(t, dir, newTestStore(t)))
+	if !strings.Contains(html, `js-copy-rss" data-url="`+testBaseURL+`/feed.xml"`) {
+		t.Fatal("в пустом состоянии нет копирования RSS")
 	}
 }
 

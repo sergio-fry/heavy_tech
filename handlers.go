@@ -220,22 +220,72 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// russianMonths — названия месяцев в родительном падеже; своя «локализация»
+// из двенадцати строк вместо подключения библиотеки.
+var russianMonths = [...]string{
+	"января", "февраля", "марта", "апреля", "мая", "июня",
+	"июля", "августа", "сентября", "октября", "ноября", "декабря",
+}
+
+// russianDate — дата словами по-русски: «2 октября 2026».
+func russianDate(t time.Time) string {
+	return fmt.Sprintf("%d %s %d", t.Day(), russianMonths[t.Month()-1], t.Year())
+}
+
 // episodeItem — данные одного эпизода для HTML-страницы.
 type episodeItem struct {
-	Slug          string
-	Title         string
-	Description   string
-	DateLabel     string
-	DurationLabel string
-	AudioURL      string
-	Downloads     int64
-	Plays         int64
+	Slug            string
+	Title           string
+	Description     string
+	DateLabel       string
+	DurationSeconds int64
+	DurationLabel   string
+	AudioURL        string
+	Downloads       int64
+	Plays           int64
+	Number          int // номер выпуска: 1 у самого старого
 }
 
 type pageData struct {
-	Title    string
-	FeedURL  string
-	Episodes []episodeItem
+	Title       string
+	Description string
+	HasImage    bool
+	Image       string
+	BaseURL     string
+	LatestSlug  string // slug самого нового эпизода; пусто, если эпизодов нет
+	FeedURL     string
+	Episodes    []episodeItem
+}
+
+// buildPageData — сборка данных HTML-страницы из метаданных канала и индекса
+// (эпизоды приходят от новых к старым).
+func buildPageData(ch Channel, baseURL string, views []EpisodeView) pageData {
+	data := pageData{
+		Title:       ch.Title,
+		Description: ch.Description,
+		HasImage:    ch.Image != "",
+		Image:       ch.Image,
+		BaseURL:     baseURL,
+		FeedURL:     baseURL + "/feed.xml",
+	}
+	for i, v := range views {
+		if i == 0 {
+			data.LatestSlug = v.Slug
+		}
+		data.Episodes = append(data.Episodes, episodeItem{
+			Slug:            v.Slug,
+			Title:           v.Title,
+			Description:     v.Description,
+			DateLabel:       russianDate(v.PublishedAt),
+			DurationSeconds: EffectiveDuration(v.Episode),
+			DurationLabel:   humanDuration(EffectiveDuration(v.Episode)),
+			AudioURL:        baseURL + "/audio/" + v.Slug,
+			Downloads:       v.Downloads,
+			Plays:           v.Plays,
+			Number:          len(views) - i,
+		})
+	}
+	return data
 }
 
 // handleHome — сайт: список эпизодов с плеером и счётчиками.
@@ -245,22 +295,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
-	data := pageData{
-		Title:   s.ch.Title,
-		FeedURL: s.cfg.BaseURL + "/feed.xml",
-	}
-	for _, v := range views {
-		data.Episodes = append(data.Episodes, episodeItem{
-			Slug:          v.Slug,
-			Title:         v.Title,
-			Description:   v.Description,
-			DateLabel:     v.PublishedAt.Format("02.01.2006"),
-			DurationLabel: humanDuration(EffectiveDuration(v.Episode)),
-			AudioURL:      s.cfg.BaseURL + "/audio/" + v.Slug,
-			Downloads:     v.Downloads,
-			Plays:         v.Plays,
-		})
-	}
+	data := buildPageData(s.ch, s.cfg.BaseURL, views)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
 		log.Printf("home: шаблон: %v", err)
