@@ -96,6 +96,47 @@ go build -o heavytech .
 Всё публично и без авторизации. Если захочется прикрыть статистику — basic auth
 вешается на reverse-proxy, код сервиса не меняется.
 
+## Добавление выпуска (эксплуатация)
+
+Управление — через файлы, без админки. Папка подкастов живёт на CT `heavytech`
+в `/opt/heavytech/data/podcast/`; конвенции имён, sidecar и `podcast.yaml` — выше.
+
+**Канал.** `title`/`description` из `podcast.yaml` попадают в герой-блок сайта
+и OG-теги, `image` (абсолютный URL, от 1400x1400 для Apple) — в обложку героя
+и `og:image`. Файл правится руками на CT; роль при деплое его не затирает.
+
+**Выпуск:**
+
+1. Назвать файл `YYYY-MM-DD-slug.mp3`. Slug — `[a-z0-9-]`, после публикации
+   неизменяем: guid в фиде = URL файла, счётчики привязаны к слагу.
+2. Положить рядом sidecar `slug.yaml` с `title`, `description` и `duration`
+   (в секундах; реальную можно снять:
+   `ffprobe -v error -show_entries format=duration -of csv=p=0 episode.mp3`).
+   Без `duration` длительность оценивается по размеру из расчёта 128 kbps.
+3. Скопировать на CT и выставить владельца nonroot (65532), чтобы сканер мог
+   удалять и заменять файлы:
+
+   ```bash
+   scp 2026-10-20-moy-vypusk.mp3 2026-10-20-moy-vypusk.yaml \
+       root@192.168.88.134:/opt/heavytech/data/podcast/
+   ssh root@192.168.88.134 chown 65532:65532 \
+       /opt/heavytech/data/podcast/2026-10-20-moy-vypusk.*
+   ```
+
+4. Синхронизировать индекс и проверить:
+
+   ```bash
+   curl -X POST https://heavytech.udalovs.ru/admin/rescan
+   # {"added":1,"updated":0,"removed":0,"total":4}
+   curl -s https://heavytech.udalovs.ru/ | grep -o 'data-slug="[^"]*"'
+   curl -s https://heavytech.udalovs.ru/feed.xml | grep -c '<item>'
+   ```
+
+Грабли: файл не по шаблону молча игнорируется; два файла с одним слагом или
+битый YAML в sidecar — ошибка синхронизации; удаление файла после рескана
+убирает выпуск вместе с метриками (CASCADE); ID3-теги не читаются —
+заголовок берётся из sidecar или выводится из слага.
+
 ## Метрики (честно про точность)
 
 Уровень «личное любопытство», не IAB:
@@ -117,6 +158,8 @@ go vet ./... && gofmt -l .
 
 ## Деплой
 
-Вне этого репозитория — по конвенциям infra: LXC-контейнер, systemd-юнит
-(образец — роль tributary), блок в edge-Caddy с TLS, UFW на порт сервиса.
+Вне этого репозитория — ansible-роль `heavytech` в infra: bump `heavytech_git_ref`
+на новый SHA → `make run ANSIBLE_OPTS="--limit heavytech"` (на CT пересобирается
+docker compose из `/opt/heavytech`). Состояние — host-volume `/opt/heavytech/data`
+(папка подкастов + SQLite-база), наружу — edge-Caddy `heavytech.udalovs.ru`.
 Бэкапить `data/` целиком (папка + база).
