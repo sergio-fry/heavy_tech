@@ -99,7 +99,8 @@ go build -o heavytech .
 ## Добавление выпуска (эксплуатация)
 
 Управление — через файлы, без админки. Папка подкастов живёт на CT `heavytech`
-в `/opt/heavytech/data/podcast/`; конвенции имён, sidecar и `podcast.yaml` — выше.
+на data-диске, в `/mnt/storage/heavytech/data/podcast/`; конвенции имён, sidecar
+и `podcast.yaml` — выше.
 
 **Канал.** `title`/`description` из `podcast.yaml` попадают в герой-блок сайта
 и OG-теги, `image` (абсолютный URL, от 1400x1400 для Apple) — в обложку героя
@@ -118,9 +119,9 @@ go build -o heavytech .
 
    ```bash
    scp 2026-10-20-moy-vypusk.mp3 2026-10-20-moy-vypusk.yaml \
-       root@192.168.88.134:/opt/heavytech/data/podcast/
+       root@192.168.88.134:/mnt/storage/heavytech/data/podcast/
    ssh root@192.168.88.134 chown 65532:65532 \
-       /opt/heavytech/data/podcast/2026-10-20-moy-vypusk.*
+       /mnt/storage/heavytech/data/podcast/2026-10-20-moy-vypusk.*
    ```
 
 4. Синхронизировать индекс и проверить:
