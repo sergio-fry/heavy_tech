@@ -33,10 +33,7 @@ explicit: false
 // writeEpisode создаёт MP3-файл с заданным содержимым (и опциональный sidecar).
 func writeEpisode(t *testing.T, dir, date, slug, content string, sc *sidecar) {
 	t.Helper()
-	name := filepath.Join(dir, date+"-"+slug+".mp3")
-	if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRawEpisode(t, dir, date+"-"+slug+".mp3", content)
 	if sc != nil {
 		data := ""
 		if sc.Title != "" {
@@ -51,6 +48,15 @@ func writeEpisode(t *testing.T, dir, date, slug, content string, sc *sidecar) {
 		if err := os.WriteFile(filepath.Join(dir, slug+".yaml"), []byte(data), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// writeRawEpisode пишет файл эпизода с произвольным именем/расширением
+// (содержимое синтетическое — валидность аудио сервис не проверяет).
+func writeRawEpisode(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -120,6 +126,41 @@ func TestDuplicateSlug(t *testing.T) {
 	writeEpisode(t, dir, "2026-10-15", "odinakovyy", "b", nil)
 	if _, err := ScanFolder(dir); err == nil {
 		t.Fatal("ожидали ошибку дублирующегося слага")
+	}
+}
+
+// TestDuplicateSlugAcrossFormats — один слаг у .mp3 и .m4a — тоже ошибка папки.
+func TestDuplicateSlugAcrossFormats(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "2026-10-01", "duet", "a", nil)
+	writeRawEpisode(t, dir, "2026-10-01-duet.m4a", "b")
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("ожидали ошибку дублирующегося слага между форматами")
+	}
+}
+
+// TestAacFormats — .aac и .m4a распознаются с MIME по расширению;
+// неподдерживаемые расширения (.wav, .flac) игнорируются.
+func TestAacFormats(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeRawEpisode(t, dir, "2026-10-02-vtoroy.aac", "aac-bytes")
+	writeRawEpisode(t, dir, "2026-10-03-tretiy.m4a", "m4a-bytes")
+	writeRawEpisode(t, dir, "2026-10-04-zapis.wav", "x")
+	writeRawEpisode(t, dir, "2026-10-05-konpekt.flac", "x")
+
+	eps := mustScan(t, dir)
+	if len(eps) != 2 {
+		t.Fatalf("хотели 2 эпизода, получили %d: %+v", len(eps), eps)
+	}
+	bySlug := map[string]Episode{}
+	for _, e := range eps {
+		bySlug[e.Slug] = e
+	}
+	if e := bySlug["vtoroy"]; e.Mime != "audio/aac" {
+		t.Fatalf("aac: mime %q, хотели audio/aac", e.Mime)
+	}
+	if e := bySlug["tretiy"]; e.Mime != "audio/x-m4a" {
+		t.Fatalf("m4a: mime %q, хотели audio/x-m4a", e.Mime)
 	}
 }
 

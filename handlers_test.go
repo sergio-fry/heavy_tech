@@ -185,6 +185,46 @@ func TestFeed(t *testing.T) {
 	}
 }
 
+// TestAacMimeInAudioAndFeed — MIME по расширению доходит до отдачи аудио и enclosure фида.
+func TestAacMimeInAudioAndFeed(t *testing.T) {
+	env := newTestEnv(t)
+	writeRawEpisode(t, env.dir, "2026-10-05-audiokniga.aac", strings.Repeat("C", 5000))
+	writeRawEpisode(t, env.dir, "2026-10-06-intervyu.m4a", strings.Repeat("D", 6000))
+	if _, _, _, err := SyncPodcastDir(env.dir, env.store); err != nil {
+		t.Fatal(err)
+	}
+
+	// отдача: Content-Type по формату файла
+	rec := env.do(t, "GET", "/audio/audiokniga", "PodcastApp/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d, хотели 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "audio/aac" {
+		t.Fatalf("Content-Type %q, хотели audio/aac", ct)
+	}
+	// Range для AAC работает так же, как для MP3
+	rec = env.do(t, "GET", "/audio/audiokniga", "PodcastApp/1.0", nil,
+		map[string]string{"Range": "bytes=0-99"})
+	if rec.Code != 206 {
+		t.Fatalf("код %d, хотели 206", rec.Code)
+	}
+
+	// фид: enclosure type по формату файла
+	rec = env.do(t, "GET", "/feed.xml", "PodcastApp/1.0", nil, nil)
+	var feed nsFeed
+	if err := xml.Unmarshal(rec.Body.Bytes(), &feed); err != nil {
+		t.Fatalf("фид не разбирается: %v", err)
+	}
+	types := map[string]string{} // slug -> enclosure type
+	for _, it := range feed.Channel.Items {
+		slug := strings.TrimPrefix(it.GUID.Value, testBaseURL+"/audio/")
+		types[slug] = it.Enclosure.Type
+	}
+	if types["audiokniga"] != "audio/aac" || types["intervyu"] != "audio/x-m4a" {
+		t.Fatalf("enclosure types: %v", types)
+	}
+}
+
 // TestFeedCacheUntilRescan — кэш фида сбрасывается ресканом.
 func TestFeedCacheUntilRescan(t *testing.T) {
 	env := newTestEnv(t)

@@ -12,8 +12,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// epFileRe — конвенция имени эпизода: YYYY-MM-DD-slug.mp3, слаг из [a-z0-9-].
-var epFileRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.mp3$`)
+// epFileRe — конвенция имени эпизода: YYYY-MM-DD-slug.<ext>, слаг из [a-z0-9-],
+// ext — одно из поддерживаемых аудиорасширений (см. mimeByExt).
+var epFileRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.(mp3|aac|m4a)$`)
+
+// mimeByExt — единственное место правды о MIME эпизода: расширение → тип.
+// Новый формат = одна строка здесь и одна альтернатива в epFileRe.
+var mimeByExt = map[string]string{
+	".mp3": "audio/mpeg",
+	".aac": "audio/aac",
+	".m4a": "audio/x-m4a",
+}
 
 // ScanFolder читает папку подкастов и возвращает желаемое состояние индекса.
 // Файлы, не соответствующие конвенции имени, игнорируются. Дублирующийся слаг
@@ -39,6 +48,12 @@ func ScanFolder(dir string) ([]Episode, error) {
 			continue
 		}
 		slug := m[2]
+		mime, known := mimeByExt["."+m[3]]
+		if !known {
+			// расширение допущено regex-ом, но в карте не описано, —
+			// считаем его неподдерживаемым, а не публикуем с пустым MIME.
+			continue
+		}
 		if prev, dup := seenSlugs[slug]; dup {
 			return nil, fmt.Errorf("дублирующийся слаг %q: %s и %s", slug, prev, entry.Name())
 		}
@@ -54,7 +69,7 @@ func ScanFolder(dir string) ([]Episode, error) {
 			PublishedAt: date,
 			FilePath:    filepath.Join(dir, entry.Name()),
 			FileSize:    info.Size(),
-			Mime:        "audio/mpeg",
+			Mime:        mime,
 			FileMtime:   info.ModTime().Unix(),
 		}
 		sc, err := readSidecar(dir, slug)

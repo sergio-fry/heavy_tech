@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +95,7 @@ func (s *Server) handleAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", ep.Mime)
-	http.ServeContent(w, r, "episode.mp3", time.Unix(ep.FileMtime, 0), f)
+	http.ServeContent(w, r, filepath.Base(ep.FilePath), time.Unix(ep.FileMtime, 0), f)
 }
 
 // countDownload применяет правила из specs/audience-metrics: только GET,
