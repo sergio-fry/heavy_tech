@@ -13,18 +13,19 @@ const itunesNS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 // обратный unmarshal по таким тегам не работает — в тестах используются
 // отдельные структуры с URL-неймспейсами.
 
-// defaultBitrate — оценка длительности при неизвестном битрейте: 128 kbps.
+// defaultBitrate — оценка длительности аудио при неизвестном битрейте: 128 kbps.
 const defaultBitrate = 128 * 1000 / 8 // байт в секунду
 
-// EffectiveDuration — длительность эпизода: из sidecar либо оценка по размеру.
-func EffectiveDuration(e Episode) int64 {
-	if e.DurationSeconds > 0 {
-		return e.DurationSeconds
+// EffectiveDuration — длительность носителя: из meta либо оценка по размеру.
+// Оценка допустима только для аудио (видео так оценивать бессмысленно).
+func EffectiveDuration(f EpisodeFile) int64 {
+	if f.DurationSeconds > 0 {
+		return f.DurationSeconds
 	}
-	if e.FileSize <= 0 {
+	if f.Kind != KindAudio || f.Size <= 0 {
 		return 0
 	}
-	return (e.FileSize + defaultBitrate - 1) / defaultBitrate
+	return (f.Size + defaultBitrate - 1) / defaultBitrate
 }
 
 type rssFeed struct {
@@ -77,12 +78,15 @@ type item struct {
 	PubDate     string    `xml:"pubDate"`
 	Description string    `xml:"description"`
 	Enclosure   enclosure `xml:"enclosure"`
+	Episode     string    `xml:"itunes:episode,omitempty"`
 	Duration    string    `xml:"itunes:duration,omitempty"`
 }
 
-// BuildFeed собирает RSS 2.0 с iTunes-расширением. views — эпизоды с агрегатами,
-// уже отсортированные от новых к старым. Все URL абсолютные.
-func BuildFeed(ch Channel, baseURL string, views []EpisodeView, now time.Time) ([]byte, error) {
+// BuildFeed собирает RSS 2.0 с iTunes-расширением для одного вида носителей.
+// kind = audio → эпизоды с аудио (enclosure/guid /audio/{n}), kind = video →
+// эпизоды с видео (/video/{n}). views уже отсортированы от новых к старым.
+// Все URL абсолютные.
+func BuildFeed(ch Channel, baseURL string, views []EpisodeView, kind string, now time.Time) ([]byte, error) {
 	link := ch.Link
 	if link == "" {
 		link = baseURL
@@ -105,18 +109,23 @@ func BuildFeed(ch Channel, baseURL string, views []EpisodeView, now time.Time) (
 		c.Category = &category{Text: ch.Category}
 	}
 	for _, v := range views {
-		audioURL := baseURL + "/audio/" + v.Slug
+		file, ok := v.File(kind)
+		if !ok {
+			continue
+		}
+		url := baseURL + "/" + kind + "/" + strconv.FormatInt(v.Number, 10)
 		c.Items = append(c.Items, item{
 			Title:       v.Title,
-			GUID:        guid{IsPermaLink: "true", Value: audioURL},
+			GUID:        guid{IsPermaLink: "true", Value: url},
 			PubDate:     v.PublishedAt.UTC().Format(time.RFC1123Z),
 			Description: v.Description,
 			Enclosure: enclosure{
-				URL:    audioURL,
-				Length: v.FileSize,
-				Type:   v.Mime,
+				URL:    url,
+				Length: file.Size,
+				Type:   file.Mime,
 			},
-			Duration: strconv.FormatInt(EffectiveDuration(v.Episode), 10),
+			Episode:  strconv.FormatInt(v.Number, 10),
+			Duration: durationLabel(EffectiveDuration(file)),
 		})
 	}
 	out, err := xml.MarshalIndent(rssFeed{Version: "2.0", Itunes: itunesNS, Channel: c}, "", "  ")
@@ -124,4 +133,12 @@ func BuildFeed(ch Channel, baseURL string, views []EpisodeView, now time.Time) (
 		return nil, err
 	}
 	return append([]byte(xml.Header), out...), nil
+}
+
+// durationLabel — itunes:duration в секундах; пусто, если длительность неизвестна.
+func durationLabel(seconds int64) string {
+	if seconds <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(seconds, 10)
 }

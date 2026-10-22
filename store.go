@@ -16,6 +16,12 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// Виды носителей эпизода. Ровно по одному на вид (design D5).
+const (
+	KindAudio = "audio"
+	KindVideo = "video"
+)
+
 // Store — SQLite-хранилище: производный индекс эпизодов + сырые события метрик.
 type Store struct {
 	db   *sql.DB
@@ -80,72 +86,232 @@ func (s *Store) hash(value string) []byte {
 	return h[:]
 }
 
-// Episode — запись индекса; всё, кроме id и discovered_at, выводится из папки.
-type Episode struct {
-	ID              int64
-	Slug            string
-	Title           string
-	Description     string
-	PublishedAt     time.Time
+// EpisodeFile — носитель эпизода. kind — audio либо video, по одному на эпизод.
+type EpisodeFile struct {
+	Number          int64
+	Kind            string
 	FilePath        string
-	FileSize        int64
 	Mime            string
-	DurationSeconds int64 // из sidecar; 0 = неизвестна (оценивается при показе)
+	Size            int64
+	DurationSeconds int64  // из episode.yaml; 0 = неизвестна (оценивается при показе)
+	BitrateKbps     int64  // декларативная характеристика из meta
+	Resolution      string // декларативная характеристика из meta
 	FileMtime       int64
 }
 
-const episodeCols = `id, slug, title, description, published_at, file_path, file_size, mime, duration_seconds, file_mtime`
+// Episode — запись индекса: номер — единственный идентификатор, остальное из папки.
+type Episode struct {
+	Number      int64
+	Title       string
+	Description string
+	PublishedAt time.Time
+	Files       []EpisodeFile
+}
 
-func scanEpisode(row interface{ Scan(...any) error }) (Episode, error) {
+// File возвращает носитель заданного вида.
+func (e Episode) File(kind string) (EpisodeFile, bool) {
+	for _, f := range e.Files {
+		if f.Kind == kind {
+			return f, true
+		}
+	}
+	return EpisodeFile{}, false
+}
+
+// EpisodeByNumber — эпизод из индекса; sql.ErrNoRows, если номера нет.
+func (s *Store) EpisodeByNumber(number int64) (Episode, error) {
 	var e Episode
 	var pubDate string
-	err := row.Scan(&e.ID, &e.Slug, &e.Title, &e.Description, &pubDate, &e.FilePath, &e.FileSize, &e.Mime, &e.DurationSeconds, &e.FileMtime)
+	err := s.db.QueryRow(`SELECT number, title, description, published_at FROM episodes WHERE number = ?`, number).
+		Scan(&e.Number, &e.Title, &e.Description, &pubDate)
 	if err != nil {
 		return e, err
 	}
-	e.PublishedAt, err = time.Parse("2006-01-02", pubDate)
-	return e, err
+	if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
+		return e, err
+	}
+	files, err := s.loadFiles()
+	if err != nil {
+		return e, err
+	}
+	e.Files = files[number]
+	return e, nil
 }
 
-// EpisodeBySlug — эпизод из индекса; sql.ErrNoRows, если слага нет.
-func (s *Store) EpisodeBySlug(slug string) (Episode, error) {
-	return scanEpisode(s.db.QueryRow(`SELECT `+episodeCols+` FROM episodes WHERE slug = ?`, slug))
+// downloadCounts — агрегаты скачиваний по видам носителей.
+type DownloadCounts struct {
+	Audio int64
+	Video int64
+	Total int64
 }
 
-// EpisodeView — эпизод с агрегатами метрик за всё время.
+// EpisodeView — эпизод с носителями и агрегатами метрик за всё время.
 type EpisodeView struct {
 	Episode
-	Downloads int64
+	Downloads DownloadCounts
 	Plays     int64
 }
 
-// ListEpisodesWithCounts — все эпизоды, новые сверху, с суммами скачиваний и прослушиваний.
-func (s *Store) ListEpisodesWithCounts() ([]EpisodeView, error) {
-	rows, err := s.db.Query(`SELECT ` + episodeCols + `,
-		(SELECT COUNT(*) FROM download_events d WHERE d.episode_id = e.id),
-		(SELECT COUNT(*) FROM play_events p WHERE p.episode_id = e.id)
-		FROM episodes e ORDER BY e.published_at DESC, e.slug DESC`)
+// ListEpisodes — все эпизоды с носителями, новые сверху (по published_at).
+func (s *Store) ListEpisodes() ([]Episode, error) {
+	rows, err := s.db.Query(`SELECT number, title, description, published_at
+		FROM episodes ORDER BY published_at DESC, number DESC`)
+	if err != nil {
+		return nil, err
+	}
+	var out []Episode
+	for rows.Next() {
+		var e Episode
+		var pubDate string
+		if err := rows.Scan(&e.Number, &e.Title, &e.Description, &pubDate); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	files, err := s.loadFiles()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Files = files[out[i].Number]
+	}
+	return out, nil
+}
+
+// loadFiles читает все носители: номер → [audio?, video?] в стабильном порядке.
+func (s *Store) loadFiles() (map[int64][]EpisodeFile, error) {
+	rows, err := s.db.Query(`SELECT number, kind, file_path, mime, size, duration_seconds,
+		bitrate_kbps, resolution, file_mtime
+		FROM episode_files
+		ORDER BY number, CASE kind WHEN 'audio' THEN 0 ELSE 1 END`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []EpisodeView
+	out := map[int64][]EpisodeFile{}
 	for rows.Next() {
-		var v EpisodeView
-		var pubDate string
-		if err := rows.Scan(&v.ID, &v.Slug, &v.Title, &v.Description, &pubDate, &v.FilePath, &v.FileSize, &v.Mime, &v.DurationSeconds, &v.FileMtime, &v.Downloads, &v.Plays); err != nil {
+		var f EpisodeFile
+		if err := rows.Scan(&f.Number, &f.Kind, &f.FilePath, &f.Mime, &f.Size,
+			&f.DurationSeconds, &f.BitrateKbps, &f.Resolution, &f.FileMtime); err != nil {
 			return nil, err
 		}
-		if v.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+		out[f.Number] = append(out[f.Number], f)
 	}
 	return out, rows.Err()
 }
 
+// ListEpisodesWithCounts — все эпизоды, новые сверху, с суммами скачиваний по видам
+// носителей и прослушиваниями.
+func (s *Store) ListEpisodesWithCounts() ([]EpisodeView, error) {
+	eps, err := s.ListEpisodes()
+	if err != nil {
+		return nil, err
+	}
+
+	downloads := map[int64]map[string]int64{}
+	rows, err := s.db.Query(`SELECT number, kind, COUNT(*) FROM download_events GROUP BY number, kind`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var number, count int64
+		var kind string
+		if err := rows.Scan(&number, &kind, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if downloads[number] == nil {
+			downloads[number] = map[string]int64{}
+		}
+		downloads[number][kind] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	plays := map[int64]int64{}
+	rows, err = s.db.Query(`SELECT number, COUNT(*) FROM play_events GROUP BY number`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var number, count int64
+		if err := rows.Scan(&number, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		plays[number] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	out := make([]EpisodeView, 0, len(eps))
+	for _, e := range eps {
+		v := EpisodeView{
+			Episode: e,
+			Downloads: DownloadCounts{
+				Audio: downloads[e.Number][KindAudio],
+				Video: downloads[e.Number][KindVideo],
+			},
+			Plays: plays[e.Number],
+		}
+		v.Downloads.Total = v.Downloads.Audio + v.Downloads.Video
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// episodeEqual сравнивает запись индекса с найденным в папке состоянием.
+func episodeEqual(a, b Episode) bool {
+	if a.Number != b.Number || a.Title != b.Title || a.Description != b.Description {
+		return false
+	}
+	if !a.PublishedAt.Equal(b.PublishedAt) || len(a.Files) != len(b.Files) {
+		return false
+	}
+	for i := range a.Files {
+		x, y := a.Files[i], b.Files[i]
+		if x.Kind != y.Kind || x.FilePath != y.FilePath || x.Mime != y.Mime || x.Size != y.Size ||
+			x.DurationSeconds != y.DurationSeconds || x.BitrateKbps != y.BitrateKbps ||
+			x.Resolution != y.Resolution || x.FileMtime != y.FileMtime {
+			return false
+		}
+	}
+	return true
+}
+
+// insertFiles пишет носители эпизода в рамках транзакции.
+func insertFiles(tx *sql.Tx, e Episode) error {
+	for _, f := range e.Files {
+		if _, err := tx.Exec(`INSERT INTO episode_files
+			(number, kind, file_path, mime, size, duration_seconds, bitrate_kbps, resolution, file_mtime)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.Number, f.Kind, f.FilePath, f.Mime, f.Size, f.DurationSeconds,
+			f.BitrateKbps, f.Resolution, f.FileMtime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Sync приводит индекс в соответствие с найденным в папке: добавляет новые,
-// обновляет изменившиеся, удаляет исчезнувшие (CASCADE чистит события).
+// обновляет изменившиеся, удаляет исчезнувшие (CASCADE чистит носители и события).
 // Идемпотентен: повторный вызов без изменений в папке ничего не меняет.
 func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 	tx, err := s.db.Begin()
@@ -158,27 +324,23 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 		}
 	}()
 
-	type existing struct {
-		id       int64
-		size     int64
-		mtime    int64
-		title    string
-		descr    string
-		duration int64
-	}
-	have := map[string]existing{}
-	rows, err := tx.Query(`SELECT id, slug, file_size, file_mtime, title, description, duration_seconds FROM episodes`)
+	have := map[int64]Episode{}
+	rows, err := tx.Query(`SELECT number, title, description, published_at FROM episodes`)
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	for rows.Next() {
-		var e existing
-		var slug string
-		if err = rows.Scan(&e.id, &slug, &e.size, &e.mtime, &e.title, &e.descr, &e.duration); err != nil {
+		var e Episode
+		var pubDate string
+		if err = rows.Scan(&e.Number, &e.Title, &e.Description, &pubDate); err != nil {
 			rows.Close()
 			return 0, 0, 0, err
 		}
-		have[slug] = e
+		if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
+			rows.Close()
+			return 0, 0, 0, err
+		}
+		have[e.Number] = e
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
@@ -186,34 +348,67 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 	}
 	rows.Close()
 
-	seen := map[string]bool{}
+	files, err := func() (map[int64][]EpisodeFile, error) {
+		out := map[int64][]EpisodeFile{}
+		frows, ferr := tx.Query(`SELECT number, kind, file_path, mime, size, duration_seconds,
+			bitrate_kbps, resolution, file_mtime
+			FROM episode_files ORDER BY number, CASE kind WHEN 'audio' THEN 0 ELSE 1 END`)
+		if ferr != nil {
+			return nil, ferr
+		}
+		defer frows.Close()
+		for frows.Next() {
+			var f EpisodeFile
+			if ferr = frows.Scan(&f.Number, &f.Kind, &f.FilePath, &f.Mime, &f.Size,
+				&f.DurationSeconds, &f.BitrateKbps, &f.Resolution, &f.FileMtime); ferr != nil {
+				return nil, ferr
+			}
+			out[f.Number] = append(out[f.Number], f)
+		}
+		return out, frows.Err()
+	}()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for number, e := range have {
+		e.Files = files[number]
+		have[number] = e
+	}
+
+	seen := map[int64]bool{}
 	for _, e := range found {
-		seen[e.Slug] = true
-		prev, ok := have[e.Slug]
+		seen[e.Number] = true
+		pubDate := e.PublishedAt.Format("2006-01-02")
+		prev, ok := have[e.Number]
 		switch {
 		case !ok:
-			if _, err = tx.Exec(`INSERT INTO episodes
-				(slug, title, description, published_at, file_path, file_size, mime, duration_seconds, file_mtime, discovered_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				e.Slug, e.Title, e.Description, e.PublishedAt.Format("2006-01-02"), e.FilePath, e.FileSize, e.Mime, e.DurationSeconds, e.FileMtime, time.Now().UTC()); err != nil {
+			if _, err = tx.Exec(`INSERT INTO episodes (number, title, description, published_at, discovered_at)
+				VALUES (?, ?, ?, ?, ?)`, e.Number, e.Title, e.Description, pubDate, time.Now().UTC()); err != nil {
+				return 0, 0, 0, err
+			}
+			if err = insertFiles(tx, e); err != nil {
 				return 0, 0, 0, err
 			}
 			added++
-		case prev.size != e.FileSize || prev.mtime != e.FileMtime || prev.title != e.Title ||
-			prev.descr != e.Description || prev.duration != e.DurationSeconds:
-			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, published_at = ?, file_path = ?,
-				file_size = ?, mime = ?, duration_seconds = ?, file_mtime = ? WHERE id = ?`,
-				e.Title, e.Description, e.PublishedAt.Format("2006-01-02"), e.FilePath, e.FileSize, e.Mime, e.DurationSeconds, e.FileMtime, prev.id); err != nil {
+		case !episodeEqual(prev, e):
+			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, published_at = ? WHERE number = ?`,
+				e.Title, e.Description, pubDate, e.Number); err != nil {
+				return 0, 0, 0, err
+			}
+			if _, err = tx.Exec(`DELETE FROM episode_files WHERE number = ?`, e.Number); err != nil {
+				return 0, 0, 0, err
+			}
+			if err = insertFiles(tx, e); err != nil {
 				return 0, 0, 0, err
 			}
 			updated++
 		}
 	}
-	for slug, prev := range have {
-		if seen[slug] {
+	for number := range have {
+		if seen[number] {
 			continue
 		}
-		if _, err = tx.Exec(`DELETE FROM episodes WHERE id = ?`, prev.id); err != nil {
+		if _, err = tx.Exec(`DELETE FROM episodes WHERE number = ?`, number); err != nil {
 			return 0, 0, 0, err
 		}
 		removed++
@@ -222,14 +417,14 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 	return added, updated, removed, tx.Commit()
 }
 
-// RecordDownload фиксирует скачивание: сольтированные хеши IP и UA, сутки UTC.
+// RecordDownload фиксирует скачивание носителя: сольтированные хеши IP и UA, сутки UTC.
 // Возвращает true, если событие засчитано (первое для ключа за день).
-func (s *Store) RecordDownload(episodeID int64, ip, ua string, at time.Time) (bool, error) {
+func (s *Store) RecordDownload(number int64, kind, ip, ua string, at time.Time) (bool, error) {
 	day := at.UTC().Format("2006-01-02")
-	res, err := s.db.Exec(`INSERT INTO download_events (episode_id, ip_hash, ua_hash, day, created_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (episode_id, ip_hash, ua_hash, day) DO NOTHING`,
-		episodeID, s.hash(ip), s.hash(ua), day, at.UTC())
+	res, err := s.db.Exec(`INSERT INTO download_events (number, kind, ip_hash, ua_hash, day, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (number, kind, ip_hash, ua_hash, day) DO NOTHING`,
+		number, kind, s.hash(ip), s.hash(ua), day, at.UTC())
 	if err != nil {
 		return false, err
 	}
@@ -238,36 +433,55 @@ func (s *Store) RecordDownload(episodeID int64, ip, ua string, at time.Time) (bo
 }
 
 // RecordPlay фиксирует прослушивание (бикон плеера); progress — опциональный процент.
-func (s *Store) RecordPlay(episodeID int64, progress *int, at time.Time) error {
-	_, err := s.db.Exec(`INSERT INTO play_events (episode_id, progress, created_at) VALUES (?, ?, ?)`,
-		episodeID, progress, at.UTC())
+func (s *Store) RecordPlay(number int64, progress *int, at time.Time) error {
+	_, err := s.db.Exec(`INSERT INTO play_events (number, progress, created_at) VALUES (?, ?, ?)`,
+		number, progress, at.UTC())
 	return err
 }
 
 // CountPlays — суммарные прослушивания эпизода.
-func (s *Store) CountPlays(episodeID int64) (int64, error) {
+func (s *Store) CountPlays(number int64) (int64, error) {
 	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM play_events WHERE episode_id = ?`, episodeID).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM play_events WHERE number = ?`, number).Scan(&n)
 	return n, err
 }
 
-// CountDownloads — суммарные скачивания эпизода.
-func (s *Store) CountDownloads(episodeID int64) (int64, error) {
-	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM download_events WHERE episode_id = ?`, episodeID).Scan(&n)
-	return n, err
+// CountDownloads — скачивания эпизода с разбивкой по видам носителей.
+func (s *Store) CountDownloads(number int64) (DownloadCounts, error) {
+	var c DownloadCounts
+	rows, err := s.db.Query(`SELECT kind, COUNT(*) FROM download_events WHERE number = ? GROUP BY kind`, number)
+	if err != nil {
+		return c, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return c, err
+		}
+		switch kind {
+		case KindAudio:
+			c.Audio = n
+		case KindVideo:
+			c.Video = n
+		}
+	}
+	c.Total = c.Audio + c.Video
+	return c, rows.Err()
 }
 
 // DumpEvents для тестов приватности: возвращает все события как строки хешей и дней.
-func (s *Store) DumpEvents() (downloads [][5]string, plays [][4]string, err error) {
-	drows, err := s.db.Query(`SELECT episode_id, HEX(ip_hash), HEX(ua_hash), day, CAST(created_at AS TEXT) FROM download_events`)
+func (s *Store) DumpEvents() (downloads [][6]string, plays [][4]string, err error) {
+	drows, err := s.db.Query(`SELECT number, kind, HEX(ip_hash), HEX(ua_hash), day, CAST(created_at AS TEXT)
+		FROM download_events`)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer drows.Close()
 	for drows.Next() {
-		var r [5]string
-		if err = drows.Scan(&r[0], &r[1], &r[2], &r[3], &r[4]); err != nil {
+		var r [6]string
+		if err = drows.Scan(&r[0], &r[1], &r[2], &r[3], &r[4], &r[5]); err != nil {
 			return nil, nil, err
 		}
 		downloads = append(downloads, r)
@@ -275,7 +489,7 @@ func (s *Store) DumpEvents() (downloads [][5]string, plays [][4]string, err erro
 	if err = drows.Err(); err != nil {
 		return nil, nil, err
 	}
-	prows, err := s.db.Query(`SELECT episode_id, CAST(progress AS TEXT), CAST(created_at AS TEXT), '' FROM play_events`)
+	prows, err := s.db.Query(`SELECT number, CAST(progress AS TEXT), CAST(created_at AS TEXT), '' FROM play_events`)
 	if err != nil {
 		return nil, nil, err
 	}

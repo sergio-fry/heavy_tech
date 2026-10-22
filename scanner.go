@@ -5,127 +5,209 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
-// epFileRe — конвенция имени эпизода: YYYY-MM-DD-slug.<ext>, слаг из [a-z0-9-],
-// ext — одно из поддерживаемых аудиорасширений (см. mimeByExt).
-var epFileRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.(mp3|aac|m4a)$`)
+// episodeFolderRe — имя папки-эпизода: номер без ведущих нулей и без 0.
+var episodeFolderRe = regexp.MustCompile(`^[1-9][0-9]*$`)
 
-// mimeByExt — единственное место правды о MIME эпизода: расширение → тип.
-// Новый формат = одна строка здесь и одна альтернатива в epFileRe.
-var mimeByExt = map[string]string{
-	".mp3": "audio/mpeg",
-	".aac": "audio/aac",
-	".m4a": "audio/x-m4a",
+// digitsFolderRe ловит «похоже на номер, но невалидно»: 0, 007, 00.
+var digitsFolderRe = regexp.MustCompile(`^[0-9]+$`)
+
+// metaFileName — обязательный манифест эпизода внутри папки.
+const metaFileName = "episode.yaml"
+
+// mediaFormat — классификация носителя по расширению (design D3):
+// единственное место правды о виде и MIME.
+type mediaFormat struct {
+	Kind string
+	Mime string
+}
+
+var mediaByExt = map[string]mediaFormat{
+	".mp3":  {Kind: KindAudio, Mime: "audio/mpeg"},
+	".aac":  {Kind: KindAudio, Mime: "audio/aac"},
+	".m4a":  {Kind: KindAudio, Mime: "audio/x-m4a"},
+	".mp4":  {Kind: KindVideo, Mime: "video/mp4"},
+	".mov":  {Kind: KindVideo, Mime: "video/quicktime"},
+	".mkv":  {Kind: KindVideo, Mime: "video/x-matroska"},
+	".webm": {Kind: KindVideo, Mime: "video/webm"},
+}
+
+// mediaMeta — секция audio:/video: в episode.yaml. Характеристики информационные.
+type mediaMeta struct {
+	File        string `yaml:"file"`
+	Duration    int64  `yaml:"duration"`     // секунды
+	BitrateKbps int64  `yaml:"bitrate_kbps"` // kbps
+	Resolution  string `yaml:"resolution"`
+}
+
+// episodeMeta — содержимое обязательного episode.yaml.
+type episodeMeta struct {
+	Title       string     `yaml:"title"`
+	Description string     `yaml:"description"`
+	PublishedAt string     `yaml:"published_at"` // YYYY-MM-DD
+	Audio       *mediaMeta `yaml:"audio"`
+	Video       *mediaMeta `yaml:"video"`
 }
 
 // ScanFolder читает папку подкастов и возвращает желаемое состояние индекса.
-// Файлы, не соответствующие конвенции имени, игнорируются. Дублирующийся слаг
-// (одинаковый slug у двух файлов) — ошибка конфигурации папки.
+// Эпизод — подпапка с числовым именем; нецифровые папки игнорируются. Любое
+// нарушение конвенции (нет meta, битый YAML, несуществующий файл, лишний файл,
+// некорректный номер) — ошибка синхронизации, а не тихий пропуск.
 func ScanFolder(dir string) ([]Episode, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("не открыть папку подкастов %s: %w", dir, err)
 	}
 	var found []Episode
-	seenSlugs := map[string]string{} // slug -> имя файла (для сообщения о дубле)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !entry.IsDir() {
+			// Плоские файлы (podcast.yaml, обложка, остатки прежнего layout) не эпизоды.
 			continue
 		}
-		m := epFileRe.FindStringSubmatch(entry.Name())
-		if m == nil {
-			continue
+		name := entry.Name()
+		if !episodeFolderRe.MatchString(name) {
+			if digitsFolderRe.MatchString(name) {
+				return nil, fmt.Errorf("папка %q: номер выпуска должен быть без ведущих нулей и не 0", name)
+			}
+			continue // нецифровые папки — не эпизоды
 		}
-		date, err := time.Parse("2006-01-02", m[1])
-		if err != nil {
-			// regexp допустил, календарь — нет (например, 2026-02-30).
-			continue
-		}
-		slug := m[2]
-		mime, known := mimeByExt["."+m[3]]
-		if !known {
-			// расширение допущено regex-ом, но в карте не описано, —
-			// считаем его неподдерживаемым, а не публикуем с пустым MIME.
-			continue
-		}
-		if prev, dup := seenSlugs[slug]; dup {
-			return nil, fmt.Errorf("дублирующийся слаг %q: %s и %s", slug, prev, entry.Name())
-		}
-		seenSlugs[slug] = entry.Name()
-
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
-		}
-		ep := Episode{
-			Slug:        slug,
-			Title:       DefaultTitle(slug),
-			PublishedAt: date,
-			FilePath:    filepath.Join(dir, entry.Name()),
-			FileSize:    info.Size(),
-			Mime:        mime,
-			FileMtime:   info.ModTime().Unix(),
-		}
-		sc, err := readSidecar(dir, slug)
+		number, err := parseNumber(name)
 		if err != nil {
 			return nil, err
 		}
-		if sc != nil {
-			if strings.TrimSpace(sc.Title) != "" {
-				ep.Title = strings.TrimSpace(sc.Title)
-			}
-			ep.Description = strings.TrimSpace(sc.Description)
-			if sc.Duration > 0 {
-				ep.DurationSeconds = sc.Duration
-			}
+		ep, err := scanEpisodeFolder(dir, name, number)
+		if err != nil {
+			return nil, err
 		}
 		found = append(found, ep)
 	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Number < found[j].Number })
 	return found, nil
 }
 
-// sidecar — поля опционального файла slug.yaml рядом с аудиофайлом.
-type sidecar struct {
-	Title       string `yaml:"title"`
-	Description string `yaml:"description"`
-	Duration    int64  `yaml:"duration"` // секунды
+// parseNumber переводит имя папки в номер; имя уже проверено regexp-ом.
+func parseNumber(name string) (int64, error) {
+	var number int64
+	for _, r := range name {
+		number = number*10 + int64(r-'0')
+		if number < 0 {
+			return 0, fmt.Errorf("папка %q: номер выпуска слишком велик", name)
+		}
+	}
+	return number, nil
 }
 
-// readSidecar возвращает nil, если sidecar-файла нет; битый YAML — ошибка.
-func readSidecar(dir, slug string) (*sidecar, error) {
-	path := filepath.Join(dir, slug+".yaml")
-	raw, err := os.ReadFile(path)
+// scanEpisodeFolder разбирает одну папку-эпизод и валидирует её meta и файлы.
+func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
+	dir := filepath.Join(root, name)
+	metaPath := filepath.Join(dir, metaFileName)
+	raw, err := os.ReadFile(metaPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return Episode{}, fmt.Errorf("папка %q: нет обязательного %s", name, metaFileName)
 		}
-		return nil, err
+		return Episode{}, fmt.Errorf("папка %q: %w", name, err)
 	}
-	var sc sidecar
-	if err := yaml.Unmarshal(raw, &sc); err != nil {
-		return nil, fmt.Errorf("не удалось разобрать %s: %w", path, err)
+	var meta episodeMeta
+	if err := yaml.Unmarshal(raw, &meta); err != nil {
+		return Episode{}, fmt.Errorf("не удалось разобрать %s: %w", metaPath, err)
 	}
-	return &sc, nil
-}
+	if strings.TrimSpace(meta.Title) == "" {
+		return Episode{}, fmt.Errorf("%s: пустой title", metaPath)
+	}
+	publishedAt, err := time.Parse("2006-01-02", strings.TrimSpace(meta.PublishedAt))
+	if err != nil {
+		return Episode{}, fmt.Errorf("%s: published_at должен быть YYYY-MM-DD, получено %q", metaPath, meta.PublishedAt)
+	}
+	if meta.Audio == nil && meta.Video == nil {
+		return Episode{}, fmt.Errorf("%s: нужна хотя бы одна секция audio: или video:", metaPath)
+	}
 
-// DefaultTitle выводит заголовок из слага: слова из дефисов, первая буква заглавная.
-func DefaultTitle(slug string) string {
-	words := strings.Split(slug, "-")
-	for i, w := range words {
-		if w == "" {
+	ep := Episode{
+		Number:      number,
+		Title:       strings.TrimSpace(meta.Title),
+		Description: strings.TrimSpace(meta.Description),
+		PublishedAt: publishedAt,
+	}
+	referenced := map[string]bool{metaFileName: true}
+	for _, section := range []struct {
+		kind string
+		meta *mediaMeta
+	}{
+		{KindAudio, meta.Audio},
+		{KindVideo, meta.Video},
+	} {
+		if section.meta == nil {
 			continue
 		}
-		r := []rune(w)
-		r[0] = unicode.ToUpper(r[0])
-		words[i] = string(r)
+		file, err := resolveMedia(dir, name, section.kind, section.meta)
+		if err != nil {
+			return Episode{}, err
+		}
+		ep.Files = append(ep.Files, file)
+		referenced[filepath.Base(section.meta.File)] = true
 	}
-	return strings.Join(words, " ")
+
+	// Любой недот-файл/подпапка, не упомянутые в meta, — сигнал об ошибке:
+	// молчаливое игнорирование уже маскировало опечатки. Dot-файлы (scp-временки) — игнор.
+	folderEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return Episode{}, fmt.Errorf("папка %q: %w", name, err)
+	}
+	for _, entry := range folderEntries {
+		if strings.HasPrefix(entry.Name(), ".") || referenced[entry.Name()] {
+			continue
+		}
+		return Episode{}, fmt.Errorf("папка %q: файл %q не упомянут в %s", name, entry.Name(), metaFileName)
+	}
+	return ep, nil
+}
+
+// resolveMedia проверяет файл из media-секции: он существует, лежит прямо в папке
+// эпизода и его расширение соответствует виду носителя.
+func resolveMedia(dir, folder, kind string, meta *mediaMeta) (EpisodeFile, error) {
+	file := strings.TrimSpace(meta.File)
+	if file == "" {
+		return EpisodeFile{}, fmt.Errorf("папка %q: в секции %s: не указан file", folder, kind)
+	}
+	if file != filepath.Base(file) || strings.ContainsAny(file, `/\`) {
+		return EpisodeFile{}, fmt.Errorf("папка %q: %s.file должен быть именем файла в папке эпизода, получено %q", folder, kind, meta.File)
+	}
+	ext := strings.ToLower(filepath.Ext(file))
+	format, known := mediaByExt[ext]
+	if !known {
+		return EpisodeFile{}, fmt.Errorf("папка %q: %s.file %q: неподдерживаемое расширение %q", folder, kind, file, ext)
+	}
+	if format.Kind != kind {
+		return EpisodeFile{}, fmt.Errorf("папка %q: %s.file %q — это %s-файл, а не %s", folder, kind, file, format.Kind, kind)
+	}
+	path := filepath.Join(dir, file)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return EpisodeFile{}, fmt.Errorf("папка %q: %s.file %q не существует", folder, kind, file)
+		}
+		return EpisodeFile{}, fmt.Errorf("папка %q: %s.file %q: %w", folder, kind, file, err)
+	}
+	if !info.Mode().IsRegular() {
+		return EpisodeFile{}, fmt.Errorf("папка %q: %s.file %q — не обычный файл", folder, kind, file)
+	}
+	return EpisodeFile{
+		Kind:            kind,
+		FilePath:        path,
+		Mime:            format.Mime,
+		Size:            info.Size(),
+		DurationSeconds: meta.Duration,
+		BitrateKbps:     meta.BitrateKbps,
+		Resolution:      strings.TrimSpace(meta.Resolution),
+		FileMtime:       info.ModTime().Unix(),
+	}, nil
 }
 
 // SyncPodcastDir сканирует папку и приводит индекс в соответствие с ней.

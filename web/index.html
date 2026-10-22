@@ -105,10 +105,16 @@
     font-size: 1.5rem; font-weight: 800; letter-spacing: -.02em;
   }
   .ep .body { flex: 1; min-width: 0; }
+  .ep .kicker {
+    font-size: .78rem; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: .15rem;
+  }
   .ep h3 { margin: 0; font-size: 1.12rem; letter-spacing: -.01em; }
   .ep .meta { color: var(--muted); font-size: .85rem; margin: .2rem 0 .5rem; }
   .ep .meta .count { color: var(--muted); opacity: .8; }
   .ep p { margin: 0 0 .9rem; color: var(--text); }
+  .downloads { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .85rem; }
+  .downloads .btn { padding: .4rem .85rem; font-size: .85rem; font-weight: 500; }
   .player { display: flex; align-items: center; gap: .85rem; }
   .play {
     width: 44px; height: 44px; flex: none; border-radius: 50%;
@@ -164,8 +170,9 @@
     <h1>{{.Title}}</h1>
     {{if .Description}}<p class="desc">{{.Description}}</p>{{end}}
     <div class="actions">
-      {{if .LatestSlug}}<button class="btn btn-primary js-latest" data-slug="{{.LatestSlug}}"><span class="ic">&#9654;</span>Слушать последний выпуск</button>{{end}}
+      {{if .LatestNumber}}<button class="btn btn-primary js-latest" data-episode="{{.LatestNumber}}"><span class="ic">&#9654;</span>Слушать последний выпуск</button>{{end}}
       <button class="btn js-copy-rss" data-url="{{.FeedURL}}">Скопировать RSS</button>
+      <a class="btn" href="{{.VideoFeedURL}}">Видео-фид</a>
     </div>
   </div>
 </section>
@@ -178,22 +185,28 @@
 {{else}}
 <h2 class="section">Выпуски</h2>
 {{range .Episodes}}
-<article class="ep" id="ep-{{.Slug}}">
+<article class="ep" id="ep-{{.Number}}">
   <div class="tile" aria-hidden="true">{{.Number}}</div>
   <div class="body">
+    <div class="kicker">Выпуск №{{.Number}}</div>
     <h3>{{.Title}}</h3>
-    <div class="meta">{{.DateLabel}}{{if .DurationLabel}} · {{.DurationLabel}}{{end}}
+    <div class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}
       · <span class="count">Скачиваний: {{.Downloads}}</span>
       · <span class="count">Прослушиваний: {{.Plays}}</span></div>
     {{if .Description}}<p>{{.Description}}</p>{{end}}
+    {{if .HasAudio}}
     <div class="player">
-      <button class="play js-play" data-slug="{{.Slug}}" aria-label="Слушать: {{.Title}}">&#9654;</button>
+      <button class="play js-play" data-episode="{{.Number}}" aria-label="Слушать: {{.Title}}">&#9654;</button>
       <div class="track js-track" title="Перемотка">
         <div class="rail"><div class="fill js-fill"></div></div>
       </div>
-      <span class="time js-time">0:00 / {{if .DurationLabel}}{{.DurationLabel}}{{else}}--:--{{end}}</span>
+      <span class="time js-time">0:00 / {{if .AudioDurationLabel}}{{.AudioDurationLabel}}{{else}}--:--{{end}}</span>
     </div>
-    <audio preload="none" data-slug="{{.Slug}}" data-duration="{{.DurationSeconds}}" src="{{.AudioURL}}"></audio>
+    <audio preload="none" data-episode="{{.Number}}" data-duration="{{.AudioDurationSecs}}" src="{{.AudioURL}}"></audio>
+    {{end}}
+    <div class="downloads">
+      {{range .Media}}<a class="btn dl" href="{{.URL}}" download>Скачать {{.Label}} · {{.SizeLabel}}</a>{{end}}
+    </div>
   </div>
 </article>
 {{end}}
@@ -202,6 +215,7 @@
 <footer>
   <span>© {{.Title}}</span><span>·</span>
   <a href="{{.FeedURL}}">RSS-фид</a><span>·</span>
+  <a href="{{.VideoFeedURL}}">Видео-фид</a><span>·</span>
   <span>Go + SQLite</span>
 </footer>
 
@@ -247,7 +261,7 @@
       fetch('/track/play', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: audio.dataset.slug }),
+        body: JSON.stringify({ episode: parseInt(audio.dataset.episode, 10) }),
         keepalive: true
       }).catch(function () {});
     });
@@ -279,8 +293,7 @@
   var latest = document.querySelector('.js-latest');
   if (latest) {
     latest.addEventListener('click', function () {
-      var slug = latest.dataset.slug;
-      var card = document.getElementById('ep-' + slug);
+      var card = document.getElementById('ep-' + latest.dataset.episode);
       if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
       var audio = card && card.querySelector('audio');
       if (audio && audio.paused) { audio.play(); }

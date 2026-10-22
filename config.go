@@ -25,7 +25,7 @@ func LoadConfig() Config {
 	flag.StringVar(&cfg.BaseURL, "base-url", envOr("BASE_URL", "http://localhost:8080"),
 		"публичный базовый URL (для абсолютных ссылок в фиде и API)")
 	flag.StringVar(&cfg.PodcastDir, "podcast-dir", envOr("PODCAST_DIR", "data/podcast"),
-		"папка подкастов (podcast.yaml и аудиоэпизоды mp3/aac/m4a)")
+		"папка подкастов (podcast.yaml и папки-эпизоды с episode.yaml и аудио/видео)")
 	flag.StringVar(&cfg.DBPath, "db", envOr("DB_PATH", "data/heavytech.db"), "путь к SQLite-базе")
 	flag.Parse()
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")

@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -30,36 +29,25 @@ explicit: false
 	}
 }
 
-// writeEpisode создаёт MP3-файл с заданным содержимым (и опциональный sidecar).
-func writeEpisode(t *testing.T, dir, date, slug, content string, sc *sidecar) {
+// writeEpisode создаёт папку-эпизод с meta и media-файлами.
+// files — имя файла → содержимое (синтетическое: валидность медиа не проверяется).
+func writeEpisode(t *testing.T, dir, folder, meta string, files map[string]string) {
 	t.Helper()
-	writeRawEpisode(t, dir, date+"-"+slug+".mp3", content)
-	if sc != nil {
-		data := ""
-		if sc.Title != "" {
-			data += "title: " + sc.Title + "\n"
-		}
-		if sc.Description != "" {
-			data += "description: " + sc.Description + "\n"
-		}
-		if sc.Duration > 0 {
-			data += "duration: " + strconv.FormatInt(sc.Duration, 10) + "\n"
-		}
-		if err := os.WriteFile(filepath.Join(dir, slug+".yaml"), []byte(data), 0o644); err != nil {
+	sub := filepath.Join(dir, folder)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(sub, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-}
-
-// writeRawEpisode пишет файл эпизода с произвольным именем/расширением
-// (содержимое синтетическое — валидность аудио сервис не проверяет).
-func writeRawEpisode(t *testing.T, dir, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sub, metaFileName), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// mustScan — сканирование, падающее на ошибке.
 func mustScan(t *testing.T, dir string) []Episode {
 	t.Helper()
 	eps, err := ScanFolder(dir)
@@ -69,252 +57,300 @@ func mustScan(t *testing.T, dir string) []Episode {
 	return eps
 }
 
-// TestParseFileName — конвенция имени: валидное, без даты, невалидная дата, дубль слага.
-func TestParseFileName(t *testing.T) {
+// metaAudio — минимальный валидный episode.yaml с аудио.
+func metaAudio(title, date, file string) string {
+	return "title: " + title + "\npublished_at: " + date + "\naudio:\n  file: " + file + "\n"
+}
+
+// TestScanFolderLayout — валидный эпизод: номер из папки, поля из meta, MIME по расширению.
+func TestScanFolderLayout(t *testing.T) {
 	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "pervyy-vypusk", "mp3-bytes", nil)
-	writeEpisode(t, dir, "2026-10-15", "vtoroy", "mp3-bytes-2", nil)
-	// игнорируются: без даты, мусорное расширение, вложенная папка
-	if err := os.WriteFile(filepath.Join(dir, "my-episode.mp3"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "2026-10-20-encode.ogg"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "2026-10-25-nested"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeEpisode(t, dir, "7", `title: «Первый выпуск»
+published_at: 2026-10-01
+description: О чём этот подкаст
+audio:
+  file: zapis.m4a
+  duration: 1872
+  bitrate_kbps: 128
+`, map[string]string{"zapis.m4a": "m4a-bytes"})
 
 	eps := mustScan(t, dir)
-	if len(eps) != 2 {
-		t.Fatalf("хотели 2 эпизода, получили %d: %+v", len(eps), eps)
+	if len(eps) != 1 {
+		t.Fatalf("хотели 1 эпизод, получили %d: %+v", len(eps), eps)
 	}
-	// порядок папки не важен; ищем по слагу
-	bySlug := map[string]Episode{}
-	for _, e := range eps {
-		bySlug[e.Slug] = e
+	e := eps[0]
+	if e.Number != 7 || e.Title != "«Первый выпуск»" || e.Description != "О чём этот подкаст" {
+		t.Fatalf("эпизод разобран неверно: %+v", e)
 	}
-	e, ok := bySlug["pervyy-vypusk"]
-	if !ok {
-		t.Fatal("эпизод pervyy-vypusk не найден")
-	}
-	want := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	if !e.PublishedAt.Equal(want) {
+	if want := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC); !e.PublishedAt.Equal(want) {
 		t.Fatalf("дата: хотели %v, получили %v", want, e.PublishedAt)
 	}
-	if e.Mime != "audio/mpeg" || e.FileSize != int64(len("mp3-bytes")) {
-		t.Fatalf("mime/size: %s/%d", e.Mime, e.FileSize)
+	if len(e.Files) != 1 {
+		t.Fatalf("носителей %d, хотели 1", len(e.Files))
+	}
+	f := e.Files[0]
+	if f.Kind != KindAudio || f.Mime != "audio/x-m4a" || f.Size != int64(len("m4a-bytes")) || f.DurationSeconds != 1872 {
+		t.Fatalf("носитель разобран неверно: %+v", f)
+	}
+	if f.BitrateKbps != 128 || f.FilePath != filepath.Join(dir, "7", "zapis.m4a") {
+		t.Fatalf("характеристики/путь носителя: %+v", f)
 	}
 }
 
-// TestInvalidCalendarDate — 2026-02-30 regexp-ом проходит, календарём — нет.
-func TestInvalidCalendarDate(t *testing.T) {
+// TestScanAudioAndVideo — один выпуск с аудио и видео: два носителя, порядок audio→video.
+func TestScanAudioAndVideo(t *testing.T) {
 	dir := writePodcastDir(t)
-	if err := os.WriteFile(filepath.Join(dir, "2026-02-30-nesuschestvuyuschaya-data.mp3"), []byte("x"), 0o644); err != nil {
+	writeEpisode(t, dir, "7", `title: С видео
+published_at: 2026-10-01
+audio:
+  file: zapis.m4a
+video:
+  file: efir.mp4
+  resolution: 1920x1080
+`, map[string]string{"zapis.m4a": "audio", "efir.mp4": "video-bytes"})
+
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || len(eps[0].Files) != 2 {
+		t.Fatalf("хотели эпизод с двумя носителями: %+v", eps)
+	}
+	if a := eps[0].Files[0]; a.Kind != KindAudio || a.Mime != "audio/x-m4a" {
+		t.Fatalf("аудио: %+v", a)
+	}
+	if v := eps[0].Files[1]; v.Kind != KindVideo || v.Mime != "video/mp4" || v.Resolution != "1920x1080" {
+		t.Fatalf("видео: %+v", v)
+	}
+	if v := eps[0].Files[1]; v.Size != int64(len("video-bytes")) {
+		t.Fatalf("размер видео: %d", v.Size)
+	}
+}
+
+// TestScanMissingMeta — папка без episode.yaml — ошибка синхронизации.
+func TestScanMissingMeta(t *testing.T) {
+	dir := writePodcastDir(t)
+	sub := filepath.Join(dir, "8")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "zapis.m4a"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("ожидали ошибку отсутствия episode.yaml")
+	}
+}
+
+// TestScanBrokenYAML — битый YAML в meta — ошибка, а не тихий пропуск.
+func TestScanBrokenYAML(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", "title: [ненезакрытая\n", map[string]string{"zapis.m4a": "x"})
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("ожидали ошибку разбора episode.yaml")
+	}
+}
+
+// TestScanMissingFile — meta ссылается на несуществующий файл — ошибка.
+func TestScanMissingFile(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", metaAudio("Эпизод", "2026-10-01", "net-fayla.m4a"), nil)
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("ожидали ошибку несуществующего файла")
+	}
+}
+
+// TestScanMissingRequiredFields — title и published_at обязательны.
+func TestScanMissingRequiredFields(t *testing.T) {
+	for name, meta := range map[string]string{
+		"нет title":        "published_at: 2026-10-01\naudio:\n  file: z.m4a\n",
+		"нет published_at": "title: X\naudio:\n  file: z.m4a\n",
+		"битая дата":       "title: X\npublished_at: 2026-02-30\naudio:\n  file: z.m4a\n",
+		"нет media-секций": "title: X\npublished_at: 2026-10-01\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writePodcastDir(t)
+			writeEpisode(t, dir, "7", meta, map[string]string{"z.m4a": "x"})
+			if _, err := ScanFolder(dir); err == nil {
+				t.Fatalf("ожидали ошибку валидации meta (%s)", name)
+			}
+		})
+	}
+}
+
+// TestScanInvalidFolderNames — 0 и ведущие нули — ошибка, нецифровые папки игнор.
+func TestScanInvalidFolderNames(t *testing.T) {
+	for _, folder := range []string{"007", "0", "00"} {
+		t.Run(folder, func(t *testing.T) {
+			dir := writePodcastDir(t)
+			writeEpisode(t, dir, folder, metaAudio("X", "2026-10-01", "z.m4a"), map[string]string{"z.m4a": "x"})
+			if _, err := ScanFolder(dir); err == nil {
+				t.Fatalf("папка %q должна быть ошибкой синхронизации", folder)
+			}
+		})
+	}
+}
+
+// TestScanNonNumericFoldersIgnored — служебные папки не эпизоды и не ошибка.
+func TestScanNonNumericFoldersIgnored(t *testing.T) {
+	dir := writePodcastDir(t)
+	sub := filepath.Join(dir, "chernoviki")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "vsyakoe.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// остатки прежнего layout в корне тоже не эпизоды
+	if err := os.WriteFile(filepath.Join(dir, "2026-10-01-staryy.m4a"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	eps := mustScan(t, dir)
 	if len(eps) != 0 {
-		t.Fatalf("невалидная дата должна игнорироваться, получили %+v", eps)
+		t.Fatalf("ожидали пустой индекс, получили %+v", eps)
 	}
 }
 
-// TestDuplicateSlug — один слаг у двух файлов (разные даты) — ошибка папки.
-func TestDuplicateSlug(t *testing.T) {
+// TestScanAudioInVideoSection — расширение не соответствует секции — ошибка.
+func TestScanAudioInVideoSection(t *testing.T) {
 	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "odinakovyy", "a", nil)
-	writeEpisode(t, dir, "2026-10-15", "odinakovyy", "b", nil)
+	writeEpisode(t, dir, "7", `title: X
+published_at: 2026-10-01
+video:
+  file: zapis.m4a
+`, map[string]string{"zapis.m4a": "x"})
 	if _, err := ScanFolder(dir); err == nil {
-		t.Fatal("ожидали ошибку дублирующегося слага")
+		t.Fatal("аудио-файл в video-секции должен быть ошибкой")
 	}
 }
 
-// TestDuplicateSlugAcrossFormats — один слаг у .mp3 и .m4a — тоже ошибка папки.
-func TestDuplicateSlugAcrossFormats(t *testing.T) {
+// TestScanUnsupportedExtension — неизвестное расширение — ошибка секции.
+func TestScanUnsupportedExtension(t *testing.T) {
 	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "duet", "a", nil)
-	writeRawEpisode(t, dir, "2026-10-01-duet.m4a", "b")
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "zapis.wav"), map[string]string{"zapis.wav": "x"})
 	if _, err := ScanFolder(dir); err == nil {
-		t.Fatal("ожидали ошибку дублирующегося слага между форматами")
+		t.Fatal("ожидали ошибку неподдерживаемого расширения")
 	}
 }
 
-// TestAacFormats — .aac и .m4a распознаются с MIME по расширению;
-// неподдерживаемые расширения (.wav, .flac) игнорируются.
-func TestAacFormats(t *testing.T) {
+// TestScanFileOutsideFolder — путь в file: обязан быть именем файла в папке.
+func TestScanFileOutsideFolder(t *testing.T) {
 	dir := writePodcastDir(t)
-	writeRawEpisode(t, dir, "2026-10-02-vtoroy.aac", "aac-bytes")
-	writeRawEpisode(t, dir, "2026-10-03-tretiy.m4a", "m4a-bytes")
-	writeRawEpisode(t, dir, "2026-10-04-zapis.wav", "x")
-	writeRawEpisode(t, dir, "2026-10-05-konpekt.flac", "x")
-
-	eps := mustScan(t, dir)
-	if len(eps) != 2 {
-		t.Fatalf("хотели 2 эпизода, получили %d: %+v", len(eps), eps)
-	}
-	bySlug := map[string]Episode{}
-	for _, e := range eps {
-		bySlug[e.Slug] = e
-	}
-	if e := bySlug["vtoroy"]; e.Mime != "audio/aac" {
-		t.Fatalf("aac: mime %q, хотели audio/aac", e.Mime)
-	}
-	if e := bySlug["tretiy"]; e.Mime != "audio/x-m4a" {
-		t.Fatalf("m4a: mime %q, хотели audio/x-m4a", e.Mime)
-	}
-}
-
-// TestSidecarOverrides — sidecar переопределяет заголовок и добавляет описание/длительность.
-func TestSidecarOverrides(t *testing.T) {
-	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "so-sidecarom", "content", &sidecar{
-		Title: "«Первый выпуск»", Description: "О чём этот подкаст", Duration: 1872,
-	})
-	eps := mustScan(t, dir)
-	if len(eps) != 1 {
-		t.Fatalf("хотели 1 эпизод, получили %d", len(eps))
-	}
-	e := eps[0]
-	if e.Title != "«Первый выпуск»" || e.Description != "О чём этот подкаст" || e.DurationSeconds != 1872 {
-		t.Fatalf("sidecar не применился: %+v", e)
-	}
-}
-
-// TestSidecarMissingDefaults — без sidecar заголовок выводится из слага, описание пустое.
-func TestSidecarMissingDefaults(t *testing.T) {
-	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "pervyy-vypusk", "content", nil)
-	eps := mustScan(t, dir)
-	if len(eps) != 1 {
-		t.Fatalf("хотели 1 эпизод, получили %d", len(eps))
-	}
-	e := eps[0]
-	if e.Title != "Pervyy Vypusk" {
-		t.Fatalf("дефолтный заголовок: %q", e.Title)
-	}
-	if e.Description != "" || e.DurationSeconds != 0 {
-		t.Fatalf("ожидались пустые описание/длительность: %+v", e)
-	}
-}
-
-// TestBrokenSidecar — битый YAML в sidecar — ошибка скана, а не тихое игнорирование.
-func TestBrokenSidecar(t *testing.T) {
-	dir := writePodcastDir(t)
-	writeEpisode(t, dir, "2026-10-01", "s-bitym-yaml", "content", nil)
-	if err := os.WriteFile(filepath.Join(dir, "s-bitym-yaml.yaml"), []byte("title: [ненезакрытая"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "../outside.m4a"), nil)
 	if _, err := ScanFolder(dir); err == nil {
-		t.Fatal("ожидали ошибку разбора sidecar")
+		t.Fatal("ожидали ошибку пути вне папки эпизода")
 	}
 }
 
-// TestDefaultTitle — первая буква каждого слова заглавная.
-func TestDefaultTitle(t *testing.T) {
-	cases := map[string]string{
-		"pervyy-vypusk":   "Pervyy Vypusk",
-		"obzor-2026-goda": "Obzor 2026 Goda",
-		"odin":            "Odin",
-		"dvoynoy--defis":  "Dvoynoy  Defis", // двойной дефис в слаге невозможен по regexp, но функция устойчива
-	}
-	for slug, want := range cases {
-		if got := DefaultTitle(slug); got != want {
-			t.Errorf("DefaultTitle(%q) = %q, хотели %q", slug, got, want)
-		}
+// TestScanExtraFile — не упомянутый в meta недот-файл — ошибка.
+func TestScanExtraFile(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "zapis.m4a"),
+		map[string]string{"zapis.m4a": "x", "staraya-zapis.mp3": "y"})
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("лишний файл должен быть ошибкой синхронизации")
 	}
 }
 
-// TestSyncLifecycle — добавление, удаление, идемпотентность, потеря БД, переименование.
+// TestScanDotFileIgnored — временные dot-файлы копирования не мешают публикации.
+func TestScanDotFileIgnored(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "zapis.m4a"),
+		map[string]string{"zapis.m4a": "x", ".zapis.m4a.gSNpVJ": "tmp"})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || len(eps[0].Files) != 1 {
+		t.Fatalf("dot-файл не должен ломать скан: %+v", eps)
+	}
+}
+
+// TestScanOrderByNumber — результат сканера упорядочен по номеру.
+func TestScanOrderByNumber(t *testing.T) {
+	dir := writePodcastDir(t)
+	for _, n := range []string{"10", "2", "1"} {
+		writeEpisode(t, dir, n, metaAudio("Эпизод "+n, "2026-10-01", "z.m4a"), map[string]string{"z.m4a": "x"})
+	}
+	eps := mustScan(t, dir)
+	if len(eps) != 3 || eps[0].Number != 1 || eps[1].Number != 2 || eps[2].Number != 10 {
+		t.Fatalf("порядок/номера: %+v", eps)
+	}
+}
+
+// TestSyncLifecycle — добавление, идемпотентность, удаление, переименование, потеря БД.
 func TestSyncLifecycle(t *testing.T) {
 	dir := writePodcastDir(t)
 	st := newTestStore(t)
 
-	// 1) новый файл добавляется
-	writeEpisode(t, dir, "2026-10-01", "a", "content-a", nil)
+	// 1) новый эпизод добавляется
+	writeEpisode(t, dir, "1", metaAudio("Первый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "content-a"})
 	added, updated, removed, err := SyncPodcastDir(dir, st)
 	if err != nil || added != 1 || updated != 0 || removed != 0 {
 		t.Fatalf("sync#1: %d/%d/%d, err=%v", added, updated, removed, err)
 	}
 
-	// 2) идемпотентность: повторный прогон ничего не меняет
+	// 2) идемпотентность
 	added, updated, removed, err = SyncPodcastDir(dir, st)
 	if err != nil || added+updated+removed != 0 {
 		t.Fatalf("sync#2 (идемпотентность): %d/%d/%d, err=%v", added, updated, removed, err)
 	}
 
 	// 3) метрики эпизода до переименования
-	ep, err := st.EpisodeBySlug("a")
-	if err != nil {
-		t.Fatalf("эпизод a: %v", err)
-	}
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	if ok, err := st.RecordDownload(ep.ID, "203.0.113.5", "TestUA/1.0", now); err != nil || !ok {
+	if ok, err := st.RecordDownload(1, KindAudio, "203.0.113.5", "TestUA/1.0", now); err != nil || !ok {
 		t.Fatalf("RecordDownload: ok=%v err=%v", ok, err)
 	}
-	if err := st.RecordPlay(ep.ID, nil, now); err != nil {
+	if err := st.RecordPlay(1, nil, now); err != nil {
 		t.Fatal(err)
 	}
 
 	// 4) добавление второго + удаление первого
-	writeEpisode(t, dir, "2026-10-15", "b", "content-b", nil)
-	if err := os.Remove(filepath.Join(dir, "2026-10-01-a.mp3")); err != nil {
+	writeEpisode(t, dir, "2", metaAudio("Второй", "2026-10-15", "b.m4a"), map[string]string{"b.m4a": "content-b"})
+	if err := os.RemoveAll(filepath.Join(dir, "1")); err != nil {
 		t.Fatal(err)
 	}
 	added, updated, removed, err = SyncPodcastDir(dir, st)
 	if err != nil || added != 1 || updated != 0 || removed != 1 {
 		t.Fatalf("sync#3: %d/%d/%d, err=%v", added, updated, removed, err)
 	}
-	if _, err := st.EpisodeBySlug("a"); err == nil {
-		t.Fatal("эпизод a должен быть удалён из индекса")
+	if _, err := st.EpisodeByNumber(1); err == nil {
+		t.Fatal("эпизод 1 должен быть удалён из индекса")
 	}
 
-	// 5) переименование = удаление + добавление (новая идентичность, счётчики с нуля)
-	oldPath := filepath.Join(dir, "2026-10-15-b.mp3")
-	newPath := filepath.Join(dir, "2026-10-15-c.mp3")
-	if err := os.Rename(oldPath, newPath); err != nil {
+	// 5) переименование папки = новая идентичность, счётчики с нуля
+	if err := os.Rename(filepath.Join(dir, "2"), filepath.Join(dir, "5")); err != nil {
 		t.Fatal(err)
 	}
 	added, updated, removed, err = SyncPodcastDir(dir, st)
 	if err != nil || added != 1 || updated != 0 || removed != 1 {
 		t.Fatalf("sync#4 (переименование): %d/%d/%d, err=%v", added, updated, removed, err)
 	}
-	nep, err := st.EpisodeBySlug("c")
-	if err != nil {
-		t.Fatalf("эпизод c: %v", err)
-	}
-	if dl, _ := st.CountDownloads(nep.ID); dl != 0 {
-		t.Fatalf("у нового эпизода счётчик скачиваний = %d, хотели 0", dl)
+	if dl, err := st.CountDownloads(5); err != nil || dl.Total != 0 {
+		t.Fatalf("у нового эпизода скачиваний %d, хотели 0 (err=%v)", dl.Total, err)
 	}
 
-	// 6) потеря БД: индекс восстанавливается из папки
-	dbPath := filepath.Join(t.TempDir(), "restore.db")
-	st2, err := OpenStore(dbPath)
+	// 6) потеря БД: индекс восстанавливается из папок
+	st2, err := OpenStore(filepath.Join(t.TempDir(), "restore.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer st2.Close()
 	if _, _, _, err = SyncPodcastDir(dir, st2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st2.EpisodeBySlug("c"); err != nil {
-		t.Fatalf("после потери БД эпизод c не восстановлен: %v", err)
+	if _, err := st2.EpisodeByNumber(5); err != nil {
+		t.Fatalf("после потери БД эпизод 5 не восстановлен: %v", err)
 	}
-	st2.Close()
 }
 
-// TestSyncUpdatesChangedFile — изменение size+mtime файла обновляет индекс.
-func TestSyncUpdatesChangedFile(t *testing.T) {
+// TestSyncUpdatesChangedMedia — изменение размера/mtime носителя обновляет индекс.
+func TestSyncUpdatesChangedMedia(t *testing.T) {
 	dir := writePodcastDir(t)
 	st := newTestStore(t)
-	writeEpisode(t, dir, "2026-10-01", "a", "short", nil)
+	writeEpisode(t, dir, "1", metaAudio("Первый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "short"})
 	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
 		t.Fatal(err)
 	}
-	// перезаписали файл другим размером; mtime гарантируем различным
-	path := filepath.Join(dir, "2026-10-01-a.mp3")
-	future := time.Now().Add(2 * time.Hour)
+	path := filepath.Join(dir, "1", "a.m4a")
 	if err := os.WriteFile(path, []byte("much longer content now"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	future := time.Now().Add(2 * time.Hour)
 	if err := os.Chtimes(path, future, future); err != nil {
 		t.Fatal(err)
 	}
@@ -322,19 +358,53 @@ func TestSyncUpdatesChangedFile(t *testing.T) {
 	if err != nil || added != 0 || updated != 1 || removed != 0 {
 		t.Fatalf("sync: %d/%d/%d, err=%v", added, updated, removed, err)
 	}
-	ep, err := st.EpisodeBySlug("a")
+	ep, err := st.EpisodeByNumber(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ep.FileSize != int64(len("much longer content now")) {
-		t.Fatalf("size не обновился: %d", ep.FileSize)
+	if ep.Files[0].Size != int64(len("much longer content now")) {
+		t.Fatalf("размер не обновился: %d", ep.Files[0].Size)
+	}
+}
+
+// TestSyncUpdatesMetaOnly — правка title без изменения файла обновляет эпизод.
+func TestSyncUpdatesMetaOnly(t *testing.T) {
+	dir := writePodcastDir(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "1", metaAudio("Старый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "x"})
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	writeEpisode(t, dir, "1", metaAudio("Новый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "x"})
+	if _, updated, _, err := SyncPodcastDir(dir, st); err != nil || updated != 1 {
+		t.Fatalf("обновление title: updated=%d err=%v", updated, err)
+	}
+	ep, _ := st.EpisodeByNumber(1)
+	if ep.Title != "Новый" {
+		t.Fatalf("title = %q", ep.Title)
+	}
+}
+
+// TestSyncKeepsIndexOnScanError — ошибка скана не портит индекс.
+func TestSyncKeepsIndexOnScanError(t *testing.T) {
+	dir := writePodcastDir(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "1", metaAudio("Первый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "x"})
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	writeEpisode(t, dir, "2", metaAudio("Битый", "2026-10-01", "net.m4a"), nil)
+	if _, _, _, err := SyncPodcastDir(dir, st); err == nil {
+		t.Fatal("ожидали ошибку скана")
+	}
+	if _, err := st.EpisodeByNumber(1); err != nil {
+		t.Fatalf("эпизод 1 пропал из индекса после неудачного скана: %v", err)
 	}
 }
 
 // TestLoadChannelMissing — канал без podcast.yaml не публикуется.
 func TestLoadChannelMissing(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := LoadChannel(dir); err == nil {
+	if _, err := LoadChannel(t.TempDir()); err == nil {
 		t.Fatal("ожидали ошибку отсутствия podcast.yaml")
 	}
 }
@@ -362,5 +432,22 @@ func TestLoadChannelEmptyTitle(t *testing.T) {
 	}
 	if _, err := LoadChannel(dir); err == nil {
 		t.Fatal("ожидали ошибку пустого title")
+	}
+}
+
+// TestHumanSize — размеры в подписях ссылок «скачать».
+func TestHumanSize(t *testing.T) {
+	cases := map[int64]string{
+		0:               "0 Б",
+		980:             "980 Б",
+		1024:            "1 КБ",
+		12345:           "12,1 КБ",
+		5 * 1024 * 1024: "5 МБ",
+		12900000:        "12,3 МБ",
+	}
+	for size, want := range cases {
+		if got := humanSize(size); got != want {
+			t.Errorf("humanSize(%d) = %q, хотели %q", size, got, want)
+		}
 	}
 }
