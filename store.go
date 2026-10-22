@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -103,10 +105,43 @@ type EpisodeFile struct {
 type Episode struct {
 	Number      int64
 	Title       string
-	Description string // markdown-исходник описания
-	YouTube     string // ссылка на видеоверсию выпуска; пустая = нет
+	Description string   // markdown-исходник описания
+	YouTube     string   // ссылка на видеоверсию выпуска; пустая = нет
+	Host        string   // ведущий выпуска; пусто = не указан
+	Guests      []string // гости в порядке вывода; пусто = не указаны
 	PublishedAt time.Time
 	Files       []EpisodeFile
+}
+
+// episodeSelect — общий список колонок эпизода для SELECT-ов.
+const episodeSelect = `number, title, description, youtube, host, guests, published_at`
+
+// scanEpisodeRow — скан строки эпизода (Row или Rows): участники читаются из
+// JSON-колонки guests (порядок сохраняется), дата парсится из 'YYYY-MM-DD'.
+func scanEpisodeRow(scan func(dest ...any) error) (Episode, error) {
+	var e Episode
+	var pubDate, guestsRaw string
+	if err := scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &e.Host, &guestsRaw, &pubDate); err != nil {
+		return e, err
+	}
+	if err := json.Unmarshal([]byte(guestsRaw), &e.Guests); err != nil {
+		return e, err
+	}
+	pub, err := time.Parse("2006-01-02", pubDate)
+	if err != nil {
+		return e, err
+	}
+	e.PublishedAt = pub
+	return e, nil
+}
+
+// guestsJSON — гости в формате колонки; nil нормализуется в пустой список.
+func guestsJSON(guests []string) (string, error) {
+	if guests == nil {
+		guests = []string{}
+	}
+	b, err := json.Marshal(guests)
+	return string(b), err
 }
 
 // File возвращает носитель заданного вида.
@@ -121,14 +156,8 @@ func (e Episode) File(kind string) (EpisodeFile, bool) {
 
 // EpisodeByNumber — эпизод из индекса; sql.ErrNoRows, если номера нет.
 func (s *Store) EpisodeByNumber(number int64) (Episode, error) {
-	var e Episode
-	var pubDate string
-	err := s.db.QueryRow(`SELECT number, title, description, youtube, published_at FROM episodes WHERE number = ?`, number).
-		Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate)
+	e, err := scanEpisodeRow(s.db.QueryRow(`SELECT `+episodeSelect+` FROM episodes WHERE number = ?`, number).Scan)
 	if err != nil {
-		return e, err
-	}
-	if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
 		return e, err
 	}
 	files, err := s.loadFiles()
@@ -155,20 +184,15 @@ type EpisodeView struct {
 
 // ListEpisodes — все эпизоды с носителями, новые сверху (по published_at).
 func (s *Store) ListEpisodes() ([]Episode, error) {
-	rows, err := s.db.Query(`SELECT number, title, description, youtube, published_at
+	rows, err := s.db.Query(`SELECT ` + episodeSelect + `
 		FROM episodes ORDER BY published_at DESC, number DESC`)
 	if err != nil {
 		return nil, err
 	}
 	var out []Episode
 	for rows.Next() {
-		var e Episode
-		var pubDate string
-		if err := rows.Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
+		e, err := scanEpisodeRow(rows.Scan)
+		if err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -283,6 +307,9 @@ func episodeEqual(a, b Episode) bool {
 	if a.Number != b.Number || a.Title != b.Title || a.Description != b.Description || a.YouTube != b.YouTube {
 		return false
 	}
+	if a.Host != b.Host || !slices.Equal(a.Guests, b.Guests) {
+		return false
+	}
 	if !a.PublishedAt.Equal(b.PublishedAt) || len(a.Files) != len(b.Files) {
 		return false
 	}
@@ -326,20 +353,15 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 	}()
 
 	have := map[int64]Episode{}
-	rows, err := tx.Query(`SELECT number, title, description, youtube, published_at FROM episodes`)
+	rows, err := tx.Query(`SELECT ` + episodeSelect + ` FROM episodes`)
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	for rows.Next() {
-		var e Episode
-		var pubDate string
-		if err = rows.Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate); err != nil {
+		e, serr := scanEpisodeRow(rows.Scan)
+		if serr != nil {
 			rows.Close()
-			return 0, 0, 0, err
-		}
-		if e.PublishedAt, err = time.Parse("2006-01-02", pubDate); err != nil {
-			rows.Close()
-			return 0, 0, 0, err
+			return 0, 0, 0, serr
 		}
 		have[e.Number] = e
 	}
@@ -383,8 +405,12 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 		prev, ok := have[e.Number]
 		switch {
 		case !ok:
-			if _, err = tx.Exec(`INSERT INTO episodes (number, title, description, youtube, published_at, discovered_at)
-				VALUES (?, ?, ?, ?, ?, ?)`, e.Number, e.Title, e.Description, e.YouTube, pubDate, time.Now().UTC()); err != nil {
+			guests, gerr := guestsJSON(e.Guests)
+			if gerr != nil {
+				return 0, 0, 0, gerr
+			}
+			if _, err = tx.Exec(`INSERT INTO episodes (number, title, description, youtube, host, guests, published_at, discovered_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.Number, e.Title, e.Description, e.YouTube, e.Host, guests, pubDate, time.Now().UTC()); err != nil {
 				return 0, 0, 0, err
 			}
 			if err = insertFiles(tx, e); err != nil {
@@ -392,8 +418,12 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 			}
 			added++
 		case !episodeEqual(prev, e):
-			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, youtube = ?, published_at = ? WHERE number = ?`,
-				e.Title, e.Description, e.YouTube, pubDate, e.Number); err != nil {
+			guests, gerr := guestsJSON(e.Guests)
+			if gerr != nil {
+				return 0, 0, 0, gerr
+			}
+			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, youtube = ?, host = ?, guests = ?, published_at = ? WHERE number = ?`,
+				e.Title, e.Description, e.YouTube, e.Host, guests, pubDate, e.Number); err != nil {
 				return 0, 0, 0, err
 			}
 			if _, err = tx.Exec(`DELETE FROM episode_files WHERE number = ?`, e.Number); err != nil {

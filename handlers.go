@@ -254,6 +254,8 @@ type apiEpisode struct {
 	Number      int64        `json:"number"`
 	Title       string       `json:"title"`
 	Description string       `json:"description"` // markdown-исходник
+	Host        string       `json:"host"`        // пустая строка = не указан
+	Guests      []string     `json:"guests"`      // пустой список = не указаны
 	YouTube     string       `json:"youtube"`     // пустая строка = ссылки нет
 	PublishedAt string       `json:"published_at"`
 	Media       []apiMedia   `json:"media"`
@@ -278,10 +280,16 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 				Duration: EffectiveDuration(f),
 			})
 		}
+		guests := v.Guests
+		if guests == nil {
+			guests = []string{}
+		}
 		out = append(out, apiEpisode{
 			Number:      v.Number,
 			Title:       v.Title,
 			Description: v.Description,
+			Host:        v.Host,
+			Guests:      guests,
 			YouTube:     v.YouTube,
 			PublishedAt: v.PublishedAt.Format("2006-01-02"),
 			Media:       media,
@@ -325,6 +333,8 @@ type mediaItem struct {
 type episodeItem struct {
 	Number             int64
 	Title              string
+	Host               string        // пусто = линия «Ведущий:» не рисуется
+	Guests             []string      // пусто = линия «Гости:» не рисуется
 	Description        template.HTML // отрендеренный markdown; пусто = описания нет
 	YouTube            string        // пусто = ссылки нет
 	DateLabel          string
@@ -385,6 +395,8 @@ func buildPageData(ch Channel, baseURL string, views []EpisodeView) pageData {
 		item := episodeItem{
 			Number:         v.Number,
 			Title:          v.Title,
+			Host:           v.Host,
+			Guests:         v.Guests,
 			Description:    RenderDescription(v.Description),
 			YouTube:        v.YouTube,
 			DateLabel:      russianDate(v.PublishedAt),

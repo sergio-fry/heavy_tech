@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -60,6 +61,85 @@ func mustScan(t *testing.T, dir string) []Episode {
 // metaAudio — минимальный валидный episode.yaml с аудио.
 func metaAudio(title, date, file string) string {
 	return "title: " + title + "\npublished_at: " + date + "\naudio:\n  file: " + file + "\n"
+}
+
+// TestParticipantsMeta — host/guests разбираются, порядок гостей сохраняется;
+// поля опциональны, их отсутствие — норма.
+func TestParticipantsMeta(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "45", `title: Интервью
+published_at: 2026-11-01
+host: Сергей Удалов
+guests:
+  - Мила Шведова
+  - Дмитрий Копров
+audio:
+  file: zapis.m4a
+`, map[string]string{"zapis.m4a": "m4a-bytes"})
+	writeEpisode(t, dir, "46", metaAudio("Без участников", "2026-11-02", "tishina.m4a"),
+		map[string]string{"tishina.m4a": "m4a-bytes"})
+
+	eps := mustScan(t, dir)
+	byNumber := map[int64]Episode{}
+	for _, e := range eps {
+		byNumber[e.Number] = e
+	}
+	e := byNumber[45]
+	if e.Host != "Сергей Удалов" {
+		t.Fatalf("host: %q", e.Host)
+	}
+	if !slices.Equal(e.Guests, []string{"Мила Шведова", "Дмитрий Копров"}) {
+		t.Fatalf("guests: %v", e.Guests)
+	}
+	if e2 := byNumber[46]; e2.Host != "" || len(e2.Guests) != 0 {
+		t.Fatalf("без участников: %q / %v", e2.Host, e2.Guests)
+	}
+}
+
+// TestParticipantsBadType — некорректный тип значения — ошибка разбора meta.
+func TestParticipantsBadType(t *testing.T) {
+	for name, meta := range map[string]string{
+		"строка вместо списка": `title: X
+published_at: 2026-11-01
+host: Сергей
+guests: Мила Шведова
+audio:
+  file: zapis.m4a
+`,
+		"число вместо строки": `title: X
+published_at: 2026-11-01
+host: 42
+guests:
+  - Мила
+audio:
+  file: zapis.m4a
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writePodcastDir(t)
+			writeEpisode(t, dir, "7", meta, map[string]string{"zapis.m4a": "m4a-bytes"})
+			if _, err := ScanFolder(dir); err == nil {
+				t.Fatal("ожидали ошибку типа значения участников")
+			}
+		})
+	}
+}
+
+// TestParticipantsEmptyGuest — пустой элемент списка гостей — ошибка синхронизации.
+func TestParticipantsEmptyGuest(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", `title: X
+published_at: 2026-11-01
+host: Сергей
+guests:
+  - ""
+  - Мила
+audio:
+  file: zapis.m4a
+`, map[string]string{"zapis.m4a": "m4a-bytes"})
+	if _, err := ScanFolder(dir); err == nil {
+		t.Fatal("ожидали ошибку пустого элемента guests")
+	}
 }
 
 // TestScanFolderLayout — валидный эпизод: номер из папки, поля из meta, MIME по расширению.

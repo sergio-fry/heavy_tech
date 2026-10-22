@@ -58,9 +58,55 @@ type episodeMeta struct {
 	Title       string     `yaml:"title"`
 	Description string     `yaml:"description"`  // legacy-фолбэк, если нет description.md
 	YouTube     string     `yaml:"youtube"`      // ссылка на видеоверсию выпуска
+	Host        string     `yaml:"host"`         // ведущий выпуска; пусто = не указан
+	Guests      []string   `yaml:"guests"`       // гости в порядке вывода
 	PublishedAt string     `yaml:"published_at"` // YYYY-MM-DD
 	Audio       *mediaMeta `yaml:"audio"`
 	Video       *mediaMeta `yaml:"video"`
+}
+
+// validateParticipantTypes — строгая типизация host/guests: yaml.v3 молча приводит
+// скаляры (число, булево) к строке, а спека требует строку и список строк.
+// Пустое значение (null) равно отсутствию.
+func validateParticipantTypes(raw []byte) error {
+	var typed struct {
+		Host   yaml.Node `yaml:"host"`
+		Guests yaml.Node `yaml:"guests"`
+	}
+	if err := yaml.Unmarshal(raw, &typed); err != nil {
+		return err
+	}
+	absent := func(n yaml.Node) bool { return n.Kind == 0 || (n.Kind == yaml.ScalarNode && n.Tag == "!!null") }
+	if n := typed.Host; !absent(n) && (n.Kind != yaml.ScalarNode || n.Tag != "!!str") {
+		return fmt.Errorf("host: должна быть строкой")
+	}
+	if n := typed.Guests; !absent(n) {
+		if n.Kind != yaml.SequenceNode {
+			return fmt.Errorf("guests: должен быть списком строк")
+		}
+		for _, item := range n.Content {
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+				return fmt.Errorf("guests: элементы должны быть строками (получен %s)", item.Tag)
+			}
+		}
+	}
+	return nil
+}
+
+// parseParticipants — мягкая валидация участников (design D3): типы проверяет
+// сам yaml.Unmarshal (не строка/не список — ошибка разбора meta), здесь трим
+// и отбраковка пустых элементов списка, чтобы опечатка автора не исчезла молча.
+func parseParticipants(meta episodeMeta) (string, []string, error) {
+	host := strings.TrimSpace(meta.Host)
+	guests := make([]string, 0, len(meta.Guests))
+	for _, g := range meta.Guests {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			return "", nil, fmt.Errorf("guests: пустой элемент списка")
+		}
+		guests = append(guests, g)
+	}
+	return host, guests, nil
 }
 
 // ScanFolder читает папку подкастов и возвращает желаемое состояние индекса.
@@ -126,6 +172,9 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 	if err := yaml.Unmarshal(raw, &meta); err != nil {
 		return Episode{}, fmt.Errorf("не удалось разобрать %s: %w", metaPath, err)
 	}
+	if err := validateParticipantTypes(raw); err != nil {
+		return Episode{}, fmt.Errorf("%s: %w", metaPath, err)
+	}
 	if strings.TrimSpace(meta.Title) == "" {
 		return Episode{}, fmt.Errorf("%s: пустой title", metaPath)
 	}
@@ -137,6 +186,10 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 		return Episode{}, fmt.Errorf("%s: нужна хотя бы одна секция audio: или video:", metaPath)
 	}
 	youtube, err := validateYouTube(meta.YouTube)
+	if err != nil {
+		return Episode{}, fmt.Errorf("%s: %w", metaPath, err)
+	}
+	host, guests, err := parseParticipants(meta)
 	if err != nil {
 		return Episode{}, fmt.Errorf("%s: %w", metaPath, err)
 	}
@@ -152,6 +205,8 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 		Title:       strings.TrimSpace(meta.Title),
 		Description: description,
 		YouTube:     youtube,
+		Host:        host,
+		Guests:      guests,
 		PublishedAt: publishedAt,
 	}
 	for _, section := range []struct {

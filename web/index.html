@@ -197,6 +197,8 @@
   <div class="body">
     <div class="kicker">Выпуск №{{.Number}}</div>
     <h3>{{.Title}}</h3>
+    {{if .Host}}<div class="people">Ведущий: {{.Host}}</div>{{end}}
+    {{if .Guests}}<div class="people">Гости: {{range $i, $g := .Guests}}{{if $i}}, {{end}}{{$g}}{{end}}</div>{{end}}
     <div class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}
       · <span class="count">Скачиваний и прослушиваний: {{.Engagement}}</span></div>
     {{if .Description}}<div class="desc">{{.Description}}</div>{{end}}

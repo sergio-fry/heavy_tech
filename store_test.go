@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -57,7 +58,7 @@ func TestSchemaNumberedModel(t *testing.T) {
 		return out
 	}
 	ep := cols("episodes")
-	if !ep["number"] || !ep["youtube"] || ep["slug"] || ep["file_path"] {
+	if !ep["number"] || !ep["youtube"] || !ep["host"] || !ep["guests"] || ep["slug"] || ep["file_path"] {
 		t.Fatalf("episodes: %v", ep)
 	}
 	files := cols("episode_files")
@@ -72,6 +73,56 @@ func TestSchemaNumberedModel(t *testing.T) {
 	}
 	if plays := cols("play_events"); !plays["number"] || plays["episode_id"] {
 		t.Fatalf("play_events: %v", plays)
+	}
+}
+
+// TestStoreParticipantsRoundtrip — host/guests переживают Sync и читаются с сохранением порядка.
+func TestStoreParticipantsRoundtrip(t *testing.T) {
+	st := newTestStore(t)
+	ep := Episode{
+		Number:      45,
+		Title:       "Интервью",
+		PublishedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		Host:        "Сергей Удалов",
+		Guests:      []string{"Мила Шведова", "Дмитрий Копров"},
+		Files: []EpisodeFile{
+			{Kind: KindAudio, FilePath: "/p/45/a.m4a", Mime: "audio/x-m4a", Size: 100, FileMtime: 111},
+		},
+	}
+	if _, _, _, err := st.Sync([]Episode{ep}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.EpisodeByNumber(45)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "Сергей Удалов" || !slices.Equal(got.Guests, []string{"Мила Шведова", "Дмитрий Копров"}) {
+		t.Fatalf("участники: %q / %v", got.Host, got.Guests)
+	}
+
+	// без изменений — no-op; смена участников — обновление
+	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 0 {
+		t.Fatalf("no-op: updated=%d err=%v", updated, err)
+	}
+	ep.Guests = []string{"Дмитрий Копров"}
+	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+		t.Fatalf("смена гостей: updated=%d err=%v", updated, err)
+	}
+	if got, _ = st.EpisodeByNumber(45); !slices.Equal(got.Guests, []string{"Дмитрий Копров"}) {
+		t.Fatalf("гости не обновились: %v", got.Guests)
+	}
+
+	// эпизод без участников: в базе пустая строка и пустой список
+	ep.Host, ep.Guests = "", nil
+	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+		t.Fatalf("снятие участников: updated=%d err=%v", updated, err)
+	}
+	var host, guestsRaw string
+	if err := st.db.QueryRow(`SELECT host, guests FROM episodes WHERE number = 45`).Scan(&host, &guestsRaw); err != nil {
+		t.Fatal(err)
+	}
+	if host != "" || guestsRaw != "[]" {
+		t.Fatalf("пустые участники: host=%q guests=%q", host, guestsRaw)
 	}
 }
 

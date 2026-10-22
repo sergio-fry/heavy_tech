@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -373,6 +374,70 @@ func TestFeedEmpty(t *testing.T) {
 }
 
 // TestAPIYouTube — поле youtube отдаёт ссылку эпизода и пустую строку без неё.
+// TestAPIParticipants — host/guests в API: заполненный эпизод и эпизод без участников
+// (пустая строка и пустой список, но не null).
+func TestAPIParticipants(t *testing.T) {
+	env := newTestEnv(t)
+	writeEpisode(t, env.dir, "45", `title: Интервью
+published_at: 2026-11-01
+host: Сергей Удалов
+guests:
+  - Мила Шведова
+  - Дмитрий Копров
+audio:
+  file: talk.m4a
+`, map[string]string{"talk.m4a": strings.Repeat("E", 3000)})
+	if _, _, _, err := SyncPodcastDir(env.dir, env.store); err != nil {
+		t.Fatal(err)
+	}
+	rec := env.do(t, "GET", "/api/episodes", "curl/8", nil, nil)
+	var eps []apiEpisode
+	if err := json.Unmarshal(rec.Body.Bytes(), &eps); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	byNumber := map[int64]apiEpisode{}
+	for _, e := range eps {
+		byNumber[e.Number] = e
+	}
+	e45 := byNumber[45]
+	if e45.Host != "Сергей Удалов" || !slices.Equal(e45.Guests, []string{"Мила Шведова", "Дмитрий Копров"}) {
+		t.Fatalf("участники эпизода 45: %q / %v", e45.Host, e45.Guests)
+	}
+	e1 := byNumber[1]
+	if e1.Host != "" || e1.Guests == nil || len(e1.Guests) != 0 {
+		t.Fatalf("участники эпизода 1: %q / %#v (ожидались пустая строка и пустой список)", e1.Host, e1.Guests)
+	}
+}
+
+// TestHomeParticipants — линии «Ведущий:»/«Гости:» на карточке: с участниками и без.
+func TestHomeParticipants(t *testing.T) {
+	env := newTestEnv(t)
+	html := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	if strings.Contains(html, "Ведущий:") || strings.Contains(html, "Гости:") {
+		t.Fatal("без участников линии рисваться не должны")
+	}
+
+	writeEpisode(t, env.dir, "45", `title: Интервью
+published_at: 2026-11-01
+host: Сергей Удалов
+guests:
+  - Мила Шведова
+  - Дмитрий Копров
+audio:
+  file: talk.m4a
+`, map[string]string{"talk.m4a": strings.Repeat("E", 3000)})
+	if _, _, _, err := SyncPodcastDir(env.dir, env.store); err != nil {
+		t.Fatal(err)
+	}
+	html = env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	if !strings.Contains(html, "Ведущий: Сергей Удалов") {
+		t.Fatal("нет строки ведущего")
+	}
+	if !strings.Contains(html, "Гости: Мила Шведова, Дмитрий Копров") {
+		t.Fatal("нет строки гостей с сохранённым порядком")
+	}
+}
+
 func TestAPIYouTube(t *testing.T) {
 	env := newTestEnv(t)
 	writeEpisode(t, env.dir, "2", `title: Vtoroy
