@@ -1,0 +1,46 @@
+{{define "content"}}
+<article class="episode">
+  <header class="ep-head">
+    <p class="kicker">Выпуск №{{.Episode.Number}}</p>
+    <h1>{{.Episode.Title}}</h1>
+    <div class="meta">{{.Episode.DateLabel}}{{if .Episode.AudioDurationLabel}} · {{.Episode.AudioDurationLabel}}{{end}}{{if .Episode.Engagement}} · Прослушиваний и просмотров: {{.Episode.Engagement}}{{end}}</div>
+    {{if .Episode.Host}}<div class="people">Ведущий: {{.Episode.Host}}</div>{{end}}
+    {{if .Episode.Guests}}<div class="people">Гости: {{.Episode.GuestsLabel}}</div>{{end}}
+  </header>
+
+  {{if .Episode.HasAudio}}
+  <section class="player" id="inline-player">
+    <button class="play js-play" data-episode="{{.Episode.Number}}" data-src="{{.Episode.AudioURL}}" data-title="{{.Episode.Title}}" data-duration="{{.Episode.AudioDurationSecs}}" aria-label="Слушать: {{.Episode.Title}}">&#9654;</button>
+    <div class="seek-wrap">
+      <input class="seek js-seek" type="range" min="0" max="{{if .Episode.AudioDurationSecs}}{{.Episode.AudioDurationSecs}}{{else}}100{{end}}" value="0" step="1" aria-label="Перемотка: {{.Episode.Title}}" aria-valuetext="0:00">
+      {{if .Episode.Chapters}}<div class="marks" aria-hidden="true">{{range .Episode.Chapters}}<span class="mark" style="left:{{printf "%.2f" .Percent}}%"></span>{{end}}</div>{{end}}
+    </div>
+    <span class="time js-time">0:00 / {{if .Episode.AudioDurationLabel}}{{.Episode.AudioDurationLabel}}{{else}}--:--{{end}}</span>
+    <button class="speed js-speed" aria-label="Скорость воспроизведения">1x</button>
+    <button class="linkbtn js-reset">Начать сначала</button>
+  </section>
+
+  {{if .Episode.Chapters}}
+  <details class="chapters">
+    <summary>Главы · {{len .Episode.Chapters}}</summary>
+    <ol>
+      {{range .Episode.Chapters}}<li><button class="chapter js-chapter" data-start="{{.Start}}"><span class="chapter-time">{{.Label}}</span> {{.Title}}</button></li>{{end}}
+    </ol>
+  </details>
+  {{end}}
+  {{end}}
+
+  <div class="downloads">
+    {{range .Episode.Media}}<a class="btn dl" href="{{.URL}}" download>Скачать {{.Label}} · {{.SizeLabel}}</a>{{end}}
+    {{if .Episode.YouTube}}<a class="btn" href="{{.Episode.YouTube}}" target="_blank" rel="noopener noreferrer">Смотреть на YouTube</a>{{end}}
+    <button class="btn js-share" data-title="{{.Episode.Title}}" data-url="{{.Canonical}}">Поделиться</button>
+  </div>
+
+  {{if .Episode.Description}}<div class="desc">{{.Episode.Description}}</div>{{end}}
+
+  <nav class="neighbors">
+    {{if .Prev}}<a class="btn" href="{{.Prev.PageURL}}">← {{.Prev.Title}}</a>{{end}}
+    {{if .Next}}<a class="btn" href="{{.Next.PageURL}}">{{.Next.Title}} →</a>{{end}}
+  </nav>
+</article>
+{{end}}

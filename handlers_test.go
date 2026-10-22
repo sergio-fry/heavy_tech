@@ -410,11 +410,11 @@ audio:
 }
 
 // TestHomeParticipants — линии «Ведущий:»/«Гости:» на карточке: с участниками и без.
-func TestHomeParticipants(t *testing.T) {
+func TestEpisodeParticipants(t *testing.T) {
 	env := newTestEnv(t)
-	html := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	html := env.do(t, "GET", "/episodes/1", "Mozilla/5.0", nil, nil).Body.String()
 	if strings.Contains(html, "Ведущий:") || strings.Contains(html, "Гости:") {
-		t.Fatal("без участников линии рисваться не должны")
+		t.Fatal("без участников линии рисоваться не должны")
 	}
 
 	writeEpisode(t, env.dir, "45", `title: Интервью
@@ -429,7 +429,7 @@ audio:
 	if _, _, _, err := SyncPodcastDir(env.dir, env.store); err != nil {
 		t.Fatal(err)
 	}
-	html = env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	html = env.do(t, "GET", "/episodes/45", "Mozilla/5.0", nil, nil).Body.String()
 	if !strings.Contains(html, "Ведущий: Сергей Удалов") {
 		t.Fatal("нет строки ведущего")
 	}
@@ -536,9 +536,8 @@ func TestAPIEpisodes(t *testing.T) {
 
 // --- 4.1 HTML ---
 
-func TestHomeShowsEpisode(t *testing.T) {
+func TestEpisodePage(t *testing.T) {
 	env := newTestEnv(t)
-	// markdown-описание и YouTube-ссылка у эпизода 2.
 	writeEpisode(t, env.dir, "2", `title: Vtoroy
 published_at: 2026-10-15
 youtube: https://youtu.be/vtoroy
@@ -554,60 +553,92 @@ video:
 	if rec := env.do(t, "POST", "/admin/rescan", "curl/8", nil, nil); rec.Code != 200 {
 		t.Fatalf("рескан: код %d", rec.Code)
 	}
-	rec := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil)
+	rec := env.do(t, "GET", "/episodes/2", "Mozilla/5.0", nil, nil)
 	if rec.Code != 200 {
 		t.Fatalf("код %d", rec.Code)
 	}
 	html := rec.Body.String()
 	for _, want := range []string{
 		"Heavy Tech",
-		"Первый выпуск",
-		"О чём этот подкаст",
-		"Выпуск №1",
+		"Vtoroy",
 		"Выпуск №2",
-		"Выпуск №3",
-		`data-episode="1"`, // плеер и кнопка «последний выпуск» работают по номеру
-		`data-duration="1872"`,
-		"1 октября 2026", // дата словами
-		`<button class="play js-play"`,
-		`class="track js-track"`,
-		`class="btn js-copy-rss"`,
-		`js-latest" data-episode="2"`, // последний выпуск с аудио
+		"15 октября 2026",
+		`data-episode="2"`,
+		`data-duration="2"`, // 20000 байт при 128 kbps
+		`class="play js-play"`,
+		`id="inline-player"`,
+		`class="seek js-seek"`,
 		"/feed.xml",
 		"/feed-video.xml",
-		`href="` + testBaseURL + `/audio/1/001-pervyy-vypusk.aac"`,
-		`src="` + testBaseURL + `/audio/1/001-pervyy-vypusk.aac"`,
+		`href="` + testBaseURL + `/audio/2/002-vtoroy.mp3"`,
 		`href="` + testBaseURL + `/video/2/002-vtoroy.mp4"`,
-		`href="` + testBaseURL + `/video/3/003-tolko-video.mkv"`,
 		`download>Скачать Аудио`,
-		"12,1 КБ",
-		"19,5 КБ",
-		"Скачиваний и прослушиваний: 0",
 		"<strong>важно</strong>",
 		`href="https://example.com"`,
 		"Смотреть на YouTube",
 		`href="https://youtu.be/vtoroy" target="_blank" rel="noopener noreferrer"`,
-		"31:12", // 1872 c
+		"Начать сначала",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("в HTML нет %q", want)
 		}
 	}
-	if strings.Contains(html, `<audio controls`) || strings.Contains(html, ` controls`) {
+	if strings.Contains(html, " controls") {
 		t.Fatal("на странице есть нативный controls у аудио")
 	}
-	// плеер только у эпизодов 1 и 2 (у эпизода 3 только видео)
-	if n := strings.Count(html, `class="play js-play"`); n != 2 {
-		t.Fatalf("плееров %d, хотели 2", n)
+	// счётчик нулевой — не выводится
+	if strings.Contains(html, "Прослушиваний и просмотров: 0") {
+		t.Fatal("нулевой счётчик не должен выводиться")
 	}
-	// действие YouTube только у эпизода со ссылкой
-	if n := strings.Count(html, "Смотреть на YouTube"); n != 1 {
-		t.Fatalf("кнопок YouTube %d, хотели 1", n)
+	// и страница неизвестного выпуска — 404
+	if rec := env.do(t, "GET", "/episodes/999", "Mozilla/5.0", nil, nil); rec.Code != 404 {
+		t.Fatalf("неизвестный выпуск: код %d", rec.Code)
+	}
+}
+
+func TestArchivePage(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.do(t, "GET", "/episodes", "Mozilla/5.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	html := rec.Body.String()
+	for _, want := range []string{
+		"Все выпуски",
+		"Первый выпуск",
+		"Vtoroy",
+		"Tolko video",
+		`href="` + testBaseURL + `/episodes/1"`,
+		`data-year="2026"`,
+		`data-video="1"`,
+		`data-guests="0"`,
+		`id="q"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("в архиве нет %q", want)
+		}
 	}
 	// новые сверху
 	if strings.Index(html, "Tolko video") > strings.Index(html, "Vtoroy") ||
 		strings.Index(html, "Vtoroy") > strings.Index(html, "Первый выпуск") {
 		t.Fatal("эпизоды не отсортированы от новых к старым")
+	}
+}
+
+func TestLandingPage(t *testing.T) {
+	env := newTestEnv(t)
+	html := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	for _, want := range []string{
+		"<h1>Heavy Tech</h1>",
+		"Слушать последний выпуск",
+		`data-episode="2"`,
+		`href="` + testBaseURL + `/episodes/3"`,
+		`href="/episodes"`,
+		"Скопировать RSS",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("на лендинге нет %q", want)
+		}
 	}
 }
 
@@ -627,8 +658,8 @@ func TestHomeEmpty(t *testing.T) {
 	if !strings.Contains(html, "Выпуски скоро появятся") || !strings.Contains(html, "/feed.xml") {
 		t.Fatal("нет заглушки пустого списка")
 	}
-	if strings.Contains(html, `<button class="play js-play"`) {
-		t.Fatal("в пустом состоянии не должно быть плееров")
+	if strings.Contains(html, `data-src=`) {
+		t.Fatal("в пустом состоянии не должно быть кнопок воспроизведения выпусков")
 	}
 }
 
@@ -685,7 +716,7 @@ func TestBuildPageData(t *testing.T) {
 	}
 	views := []EpisodeView{videoOnly, second, first}
 	ch := Channel{Title: "Heavy Tech", Description: "О тяжёлом", Image: "https://pod.example.com/cover.jpg"}
-	data := buildPageData(ch, testBaseURL, views)
+	data := buildHomeData(ch, "", views, testBaseURL)
 
 	if data.Title != "Heavy Tech" || data.Description != "О тяжёлом" || !data.HasImage || data.Image != ch.Image {
 		t.Fatalf("метаданные канала: %+v", data)
@@ -693,9 +724,12 @@ func TestBuildPageData(t *testing.T) {
 	if data.FeedURL != testBaseURL+"/feed.xml" || data.VideoFeedURL != testBaseURL+"/feed-video.xml" {
 		t.Fatalf("FeedURL %q VideoFeedURL %q", data.FeedURL, data.VideoFeedURL)
 	}
+	if data.Canonical != testBaseURL+"/" {
+		t.Fatalf("canonical %q", data.Canonical)
+	}
 	// «последний выпуск» — самый новый эпизод С АУДИО, а не самый новый вообще
-	if data.LatestNumber != 2 {
-		t.Fatalf("LatestNumber %d, хотели 2", data.LatestNumber)
+	if data.LatestNumber != 2 || data.Latest == nil || data.Latest.Number != 2 {
+		t.Fatalf("LatestNumber %d / Latest %+v", data.LatestNumber, data.Latest)
 	}
 	if len(data.Episodes) != 3 {
 		t.Fatalf("эпизодов %d, хотели 3", len(data.Episodes))
@@ -734,8 +768,8 @@ func TestBuildPageData(t *testing.T) {
 	}
 
 	// без обложки HasImage=false, без эпизодов LatestNumber 0
-	data = buildPageData(Channel{Title: "X"}, testBaseURL, nil)
-	if data.HasImage || data.Image != "" || data.LatestNumber != 0 {
+	data = buildHomeData(Channel{Title: "X"}, "", nil, testBaseURL)
+	if data.HasImage || data.Image != "" || data.LatestNumber != 0 || data.Latest != nil {
 		t.Fatalf("пустой канал собран неверно: %+v", data)
 	}
 }
@@ -796,7 +830,7 @@ func TestHomeOpenGraphWithImage(t *testing.T) {
 		`property="og:title" content="Heavy Tech"`,
 		`property="og:description" content="Тестовый подкаст о тяжёлом"`,
 		`property="og:type" content="website"`,
-		`property="og:url" content="` + testBaseURL + `"`,
+		`property="og:url" content="` + testBaseURL + `/"`,
 		`property="og:image" content="https://cdn.example.com/cover.jpg"`,
 	} {
 		if !strings.Contains(html, want) {
@@ -814,7 +848,7 @@ func TestHomeOpenGraphWithoutImage(t *testing.T) {
 	for _, want := range []string{
 		`property="og:title" content="Heavy Tech"`,
 		`property="og:type" content="website"`,
-		`property="og:url" content="` + testBaseURL + `"`,
+		`property="og:url" content="` + testBaseURL + `/"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("в HTML нет %q", want)
@@ -847,7 +881,8 @@ func TestHomeHeroBlock(t *testing.T) {
 	html := homeHTML(t, serverOn(t, dir, st))
 	for _, want := range []string{
 		`class="cover" src="https://cdn.example.com/cover.jpg"`, // обложка из podcast.yaml
-		`js-latest" data-episode="2"`,                           // кнопка последнего выпуска
+		`Слушать последний выпуск`,                              // кнопка последнего выпуска
+		`class="btn btn-primary js-play" data-episode="2"`,
 		`<h1>Heavy Tech</h1>`,
 	} {
 		if !strings.Contains(html, want) {
@@ -1063,9 +1098,9 @@ func TestCountersConsistentHTMLAndJSON(t *testing.T) {
 		strings.NewReader(`{"episode":2}`),
 		map[string]string{"Content-Type": "application/json"})
 
-	html := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
+	html := env.do(t, "GET", "/episodes/2", "Mozilla/5.0", nil, nil).Body.String()
 	// сайт показывает единый счётчик: 4 скачивания + 1 прослушивание = 5
-	if !strings.Contains(html, "Скачиваний и прослушиваний: 5") {
+	if !strings.Contains(html, "Прослушиваний и просмотров: 5") {
 		t.Fatal("HTML не показывает единый счётчик 5 (4 скачивания + 1 прослушивание)")
 	}
 	var eps []apiEpisode
@@ -1089,6 +1124,11 @@ func TestAllPublic(t *testing.T) {
 	env := newTestEnv(t)
 	for _, tc := range []struct{ method, target string }{
 		{"GET", "/"},
+		{"GET", "/episodes"},
+		{"GET", "/episodes/1"},
+		{"GET", "/sitemap.xml"},
+		{"GET", "/robots.txt"},
+		{"GET", "/static/app.js"},
 		{"GET", "/feed.xml"},
 		{"GET", "/feed-video.xml"},
 		{"GET", "/api/episodes"},

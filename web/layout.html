@@ -1,0 +1,76 @@
+{{define "layout"}}<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<meta name="description" content="{{.MetaDescription}}">
+<link rel="canonical" href="{{.Canonical}}">
+<link rel="alternate" type="application/rss+xml" title="RSS — {{.ChannelTitle}}" href="{{.FeedURL}}">
+{{if .HasImage}}<meta property="og:image" content="{{.Image}}">
+{{end}}<meta property="og:title" content="{{.OGTitle}}">
+<meta property="og:description" content="{{.OGDescription}}">
+<meta property="og:type" content="{{.OGType}}">
+<meta property="og:url" content="{{.Canonical}}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d14e24'/%3E%3Ctext x='32' y='42' font-family='system-ui,sans-serif' font-size='28' font-weight='700' fill='%23fff' text-anchor='middle'%3EHT%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+{{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>
+{{end}}<noscript><style>.filters{display:none}</style></noscript>
+</head>
+<body data-cover="{{.Image}}">
+<header class="topbar">
+  <span class="mark" aria-hidden="true">HT</span>
+  <a class="brand" href="/">{{.ChannelTitle}}</a>
+  <nav class="nav"><a href="/episodes">Все выпуски</a></nav>
+</header>
+
+<main>
+{{template "content" .}}
+</main>
+
+<footer>
+  <div class="foot-sub">
+    <span class="foot-title">{{.ChannelTitle}}</span>
+    {{range .Subscribe}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{end}}
+    <button class="linkbtn js-copy-rss" data-url="{{.FeedURL}}">Скопировать RSS</button>
+  </div>
+  <div class="foot-meta"><a href="{{.FeedURL}}">RSS-фид</a> · <a href="{{.VideoFeedURL}}">Видео-фид</a></div>
+</footer>
+
+<audio id="player" preload="none"></audio>
+
+<div class="mini" id="mini" hidden>
+  <button class="play js-play" id="mini-play" aria-label="Пауза">&#9654;</button>
+  <div class="mini-body">
+    <div class="mini-title" id="mini-title"></div>
+    <div class="mini-row">
+      <input class="seek js-seek" id="mini-seek" type="range" min="0" max="100" value="0" step="1" aria-label="Перемотка выпуска">
+      <span class="time js-time">0:00 / --:--</span>
+    </div>
+  </div>
+  <button class="speed js-speed" aria-label="Скорость воспроизведения">1x</button>
+  <button class="mini-close" id="mini-close" aria-label="Закрыть плеер">&#10005;</button>
+</div>
+
+<div class="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>{{end}}
+
+{{define "card"}}
+<article class="card">
+  <div class="card-head">
+    <span class="num">{{.Number}}</span>
+    <span class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}{{if .Engagement}} · Прослушиваний и просмотров: {{.Engagement}}{{end}}</span>
+  </div>
+  <h3><a href="{{.PageURL}}">{{.Title}}</a></h3>
+  {{if .Host}}<div class="people">Ведущий: {{.Host}}</div>{{end}}
+  {{if .Guests}}<div class="people">Гости: {{.GuestsLabel}}</div>{{end}}
+  {{if .Summary}}<p class="summary">{{.Summary}}</p>{{end}}
+  <div class="card-actions">
+    {{if .HasAudio}}<button class="btn btn-primary js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}">Слушать</button>{{end}}
+    <a class="btn" href="{{.PageURL}}">Выпуск</a>
+    {{if .YouTube}}<a class="btn" href="{{.YouTube}}" target="_blank" rel="noopener noreferrer">YouTube</a>{{end}}
+  </div>
+</article>
+{{end}}

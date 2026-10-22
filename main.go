@@ -39,9 +39,24 @@ func run(cfg Config) error {
 		return err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// YouTube-метаданные необязательны: без ключа сервис работает как раньше.
+	var syncer *youtubeSyncer
+	if cfg.YouTubeAPIKey == "" {
+		log.Printf("youtube: ключ не задан — главы и просмотры отключены")
+	} else {
+		syncer = newYouTubeSyncer(st, cfg.YouTubeAPIKey)
+		go syncer.Run(ctx)
+	}
+
 	srv, err := NewServer(cfg, ch, st)
 	if err != nil {
 		return err
+	}
+	if syncer != nil {
+		srv.AfterRescan = syncer.Trigger
 	}
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -52,6 +67,7 @@ func run(cfg Config) error {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
+		cancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(ctx)

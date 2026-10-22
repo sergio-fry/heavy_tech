@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -18,8 +19,17 @@ import (
 	"time"
 )
 
-//go:embed web/index.html
+//go:embed web
 var webFS embed.FS
+
+// staticFS — поддерево web/ для раздачи /static/*.
+var staticFS = func() fs.FS {
+	sub, err := fs.Sub(webFS, "web")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}()
 
 // botMarkers — подстроки User-Agent, запросы с которыми не считаются скачиваниями.
 var botMarkers = []string{"bot", "spider", "crawler", "monitor"}
@@ -32,12 +42,19 @@ type feedState struct {
 
 // Server — HTTP-фасад над индексом и папкой. Реализует http.Server через mux.
 type Server struct {
-	cfg   Config
-	ch    Channel
-	store *Store
-	tmpl  *template.Template
-	mux   *http.ServeMux
-	now   func() time.Time // подменяется в тестах
+	cfg       Config
+	store     *Store
+	templates map[string]*template.Template
+	static    http.Handler
+	mux       *http.ServeMux
+	now       func() time.Time // подменяется в тестах
+
+	// AfterRescan вызывается после успешного рескана (внеочередная
+	// синхронизация YouTube). Может быть nil.
+	AfterRescan func()
+
+	contentMu sync.RWMutex
+	content   siteContent
 
 	feedMu sync.Mutex
 	feeds  map[string]*feedState
@@ -46,20 +63,35 @@ type Server struct {
 // NewServer собирает маршруты. Единственный защищаемый смысл — рескан — остаётся
 // публичным: операция идемпотентна; ограничение доступа решается на прокси.
 func NewServer(cfg Config, ch Channel, st *Store) (*Server, error) {
-	tmpl, err := template.ParseFS(webFS, "web/index.html")
+	templates, err := parsePageTemplates()
 	if err != nil {
 		return nil, err
 	}
+	about, err := LoadAbout(cfg.PodcastDir)
+	if err != nil {
+		// about.md необязателен: канал публикуется и без него.
+		log.Printf("about.md: %v", err)
+	}
+	static := http.StripPrefix("/static/", http.FileServer(http.FS(staticFS)))
 	s := &Server{
-		cfg:   cfg,
-		ch:    ch,
-		store: st,
-		tmpl:  tmpl,
-		now:   time.Now,
-		feeds: map[string]*feedState{KindAudio: {}, KindVideo: {}},
+		cfg:       cfg,
+		store:     st,
+		templates: templates,
+		static: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			static.ServeHTTP(w, r)
+		}),
+		now:     time.Now,
+		content: siteContent{ch: ch, aboutRaw: about},
+		feeds:   map[string]*feedState{KindAudio: {}, KindVideo: {}},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleHome)
+	mux.HandleFunc("GET /episodes", s.handleArchive)
+	mux.HandleFunc("GET /episodes/{number}", s.handleEpisodePage)
+	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
+	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+	mux.Handle("GET /static/", s.static)
 	mux.HandleFunc("GET /feed.xml", s.handleFeed(KindAudio))
 	mux.HandleFunc("GET /feed-video.xml", s.handleFeed(KindVideo))
 	mux.HandleFunc("GET /audio/{number}", s.handleMedia(KindAudio))
@@ -218,7 +250,7 @@ func (s *Server) handleFeed(kind string) http.HandlerFunc {
 				http.Error(w, "ошибка базы", http.StatusInternalServerError)
 				return
 			}
-			data, err := BuildFeed(s.ch, s.cfg.BaseURL, views, kind, s.now())
+			data, err := BuildFeed(s.channel(), s.cfg.BaseURL, views, kind, s.now())
 			if err != nil {
 				s.feedMu.Unlock()
 				http.Error(w, "не собрать фид", http.StatusInternalServerError)
@@ -249,18 +281,26 @@ type apiDownloads struct {
 	Total int64 `json:"total"`
 }
 
+// apiChapter — глава выпуска в машинном представлении.
+type apiChapter struct {
+	Start int64  `json:"start"`
+	Title string `json:"title"`
+}
+
 // apiEpisode — машинное представление эпизода для /api/episodes.
 type apiEpisode struct {
-	Number      int64        `json:"number"`
-	Title       string       `json:"title"`
-	Description string       `json:"description"` // markdown-исходник
-	Host        string       `json:"host"`        // пустая строка = не указан
-	Guests      []string     `json:"guests"`      // пустой список = не указаны
-	YouTube     string       `json:"youtube"`     // пустая строка = ссылки нет
-	PublishedAt string       `json:"published_at"`
-	Media       []apiMedia   `json:"media"`
-	Downloads   apiDownloads `json:"downloads"`
-	Plays       int64        `json:"plays"`
+	Number       int64        `json:"number"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description"` // markdown-исходник
+	Host         string       `json:"host"`        // пустая строка = не указан
+	Guests       []string     `json:"guests"`      // пустой список = не указаны
+	YouTube      string       `json:"youtube"`     // пустая строка = ссылки нет
+	PublishedAt  string       `json:"published_at"`
+	Media        []apiMedia   `json:"media"`
+	Downloads    apiDownloads `json:"downloads"`
+	Plays        int64        `json:"plays"`
+	YouTubeViews int64        `json:"youtube_views"`
+	Chapters     []apiChapter `json:"chapters"`
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +324,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if guests == nil {
 			guests = []string{}
 		}
+		chapters := make([]apiChapter, 0, len(v.Chapters))
+		for _, ch := range v.Chapters {
+			chapters = append(chapters, apiChapter{Start: ch.Start, Title: ch.Title})
+		}
 		out = append(out, apiEpisode{
 			Number:      v.Number,
 			Title:       v.Title,
@@ -298,7 +342,9 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 				Video: v.Downloads.Video,
 				Total: v.Downloads.Total,
 			},
-			Plays: v.Plays,
+			Plays:        v.Plays,
+			YouTubeViews: v.YouTubeViews,
+			Chapters:     chapters,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -315,51 +361,6 @@ var russianMonths = [...]string{
 // russianDate — дата словами по-русски: «2 октября 2026».
 func russianDate(t time.Time) string {
 	return fmt.Sprintf("%d %s %d", t.Day(), russianMonths[t.Month()-1], t.Year())
-}
-
-// mediaLabels — подписи видов носителей для сайта.
-var mediaLabels = map[string]string{KindAudio: "Аудио", KindVideo: "Видео"}
-
-// mediaItem — ссылка «скачать» на носитель.
-type mediaItem struct {
-	Kind      string
-	Label     string
-	URL       string
-	Size      int64
-	SizeLabel string
-}
-
-// episodeItem — данные одного эпизода для HTML-страницы.
-type episodeItem struct {
-	Number             int64
-	Title              string
-	Host               string        // пусто = линия «Ведущий:» не рисуется
-	Guests             []string      // пусто = линия «Гости:» не рисуется
-	Description        template.HTML // отрендеренный markdown; пусто = описания нет
-	YouTube            string        // пусто = ссылки нет
-	DateLabel          string
-	HasAudio           bool
-	AudioURL           string
-	AudioDurationSecs  int64
-	AudioDurationLabel string
-	Media              []mediaItem
-	Downloads          int64
-	DownloadsAudio     int64
-	DownloadsVideo     int64
-	Plays              int64
-	Engagement         int64 // downloads.total + plays: единый счётчик на сайте
-}
-
-type pageData struct {
-	Title        string
-	Description  string
-	HasImage     bool
-	Image        string
-	BaseURL      string
-	LatestNumber int64 // номер самого нового эпизода с аудио; 0 = нет
-	FeedURL      string
-	VideoFeedURL string
-	Episodes     []episodeItem
 }
 
 // humanSize — размер файла по-русски: «980 КБ», «12,3 МБ».
@@ -379,70 +380,6 @@ func humanSize(size int64) string {
 	return label + " " + units[exp]
 }
 
-// buildPageData — сборка данных HTML-страницы из метаданных канала и индекса
-// (эпизоды приходят от новых к старым).
-func buildPageData(ch Channel, baseURL string, views []EpisodeView) pageData {
-	data := pageData{
-		Title:        ch.Title,
-		Description:  ch.Description,
-		HasImage:     ch.Image != "",
-		Image:        ch.Image,
-		BaseURL:      baseURL,
-		FeedURL:      baseURL + "/feed.xml",
-		VideoFeedURL: baseURL + "/feed-video.xml",
-	}
-	for _, v := range views {
-		item := episodeItem{
-			Number:         v.Number,
-			Title:          v.Title,
-			Host:           v.Host,
-			Guests:         v.Guests,
-			Description:    RenderDescription(v.Description),
-			YouTube:        v.YouTube,
-			DateLabel:      russianDate(v.PublishedAt),
-			Downloads:      v.Downloads.Total,
-			DownloadsAudio: v.Downloads.Audio,
-			DownloadsVideo: v.Downloads.Video,
-			Plays:          v.Plays,
-			Engagement:     v.Downloads.Total + v.Plays,
-		}
-		for _, f := range v.Files {
-			item.Media = append(item.Media, mediaItem{
-				Kind:      f.Kind,
-				Label:     mediaLabels[f.Kind],
-				URL:       MediaURL(baseURL, f.Kind, v.Number, v.Title, f),
-				Size:      f.Size,
-				SizeLabel: humanSize(f.Size),
-			})
-			if f.Kind == KindAudio {
-				item.HasAudio = true
-				item.AudioURL = MediaURL(baseURL, KindAudio, v.Number, v.Title, f)
-				item.AudioDurationSecs = EffectiveDuration(f)
-				item.AudioDurationLabel = humanDuration(item.AudioDurationSecs)
-				if data.LatestNumber == 0 {
-					data.LatestNumber = v.Number
-				}
-			}
-		}
-		data.Episodes = append(data.Episodes, item)
-	}
-	return data
-}
-
-// handleHome — сайт: список эпизодов с плеером и счётчиками.
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	views, err := s.store.ListEpisodesWithCounts()
-	if err != nil {
-		http.Error(w, "ошибка базы", http.StatusInternalServerError)
-		return
-	}
-	data := buildPageData(s.ch, s.cfg.BaseURL, views)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.Execute(w, data); err != nil {
-		log.Printf("home: шаблон: %v", err)
-	}
-}
-
 type rescanResult struct {
 	Added   int   `json:"added"`
 	Updated int   `json:"updated"`
@@ -458,6 +395,10 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateFeed()
+	s.reloadContent()
+	if s.AfterRescan != nil {
+		s.AfterRescan()
+	}
 	var total int64
 	_ = s.store.db.QueryRow(`SELECT COUNT(*) FROM episodes`).Scan(&total)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

@@ -74,21 +74,42 @@ done
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-echo "==> /  (сайт)"
+echo "==> /  (лендинг)"
 HOME_HTML=$(curl -sf "$BASE/") || fail "GET /"
-grep -q "Выпуск №1" <<<"$HOME_HTML" || fail "на сайте нет карточки «Выпуск №1»"
-grep -q "Первый выпуск" <<<"$HOME_HTML" || fail "на сайте нет заголовка из episode.yaml"
-grep -q 'data-episode="1"' <<<"$HOME_HTML" || fail "на сайте нет плеера эпизода 1"
-grep -q 'href="'"$BASE"'/video/2/002-vtoroy.mp4"' <<<"$HOME_HTML" || fail "на сайте нет именованной ссылки на видео эпизода 2"
-grep -q 'href="'"$BASE"'/audio/1/001-pervyy-vypusk.mp3"' <<<"$HOME_HTML" || fail "на сайте нет именованной ссылки на аудио эпизода 1"
-grep -q 'src="'"$BASE"'/audio/1/001-pervyy-vypusk.mp3"' <<<"$HOME_HTML" || fail "плеер не использует именованный URL аудио"
-grep -q 'download>Скачать' <<<"$HOME_HTML" || fail "у ссылки скачивания нет атрибута download"
-grep -q '/feed-video.xml' <<<"$HOME_HTML" || fail "на сайте нет ссылки на видео-фид"
-grep -q '<strong>Первый</strong>' <<<"$HOME_HTML" || fail "markdown-описание не отрендерено на сайте"
-grep -q 'href="https://example.com"' <<<"$HOME_HTML" || fail "на сайте нет ссылки из markdown-описания"
-grep -q 'href="https://youtu.be/smoke" target="_blank" rel="noopener noreferrer"' <<<"$HOME_HTML" \
-  || fail "на сайте нет ссылки «Смотреть на YouTube»"
-grep -q 'Скачиваний и прослушиваний: ' <<<"$HOME_HTML" || fail "на сайте нет единого счётчика"
+grep -q "Первый выпуск" <<<"$HOME_HTML" || fail "на лендинге нет последних выпусков"
+grep -q 'data-episode="1"' <<<"$HOME_HTML" || fail "на лендинге нет кнопки воспроизведения эпизода 1"
+grep -q '/feed-video.xml' <<<"$HOME_HTML" || fail "на лендинге нет ссылки на видео-фид"
+grep -q 'href="/episodes"' <<<"$HOME_HTML" || fail "на лендинге нет ссылки на архив"
+grep -q 'js-copy-rss' <<<"$HOME_HTML" || fail "на лендинге нет копирования RSS"
+
+echo "==> /episodes (архив)"
+ARCH_HTML=$(curl -sf "$BASE/episodes") || fail "GET /episodes"
+grep -q 'href="'"$BASE"'/episodes/1"' <<<"$ARCH_HTML" || fail "в архиве нет ссылки на выпуск 1"
+grep -q 'data-year="2026"' <<<"$ARCH_HTML" || fail "в архиве нет данных для фильтра по году"
+grep -q 'id="q"' <<<"$ARCH_HTML" || fail "в архиве нет поиска"
+
+echo "==> /episodes/1 (страница выпуска)"
+EP_HTML=$(curl -sf "$BASE/episodes/1") || fail "GET /episodes/1"
+grep -q '<strong>Первый</strong>' <<<"$EP_HTML" || fail "markdown-описание не отрендерено на странице выпуска"
+grep -q 'href="https://example.com"' <<<"$EP_HTML" || fail "на странице выпуска нет ссылки из markdown-описания"
+grep -q 'href="'"$BASE"'/audio/1/001-pervyy-vypusk.mp3"' <<<"$EP_HTML" || fail "на странице выпуска нет именованной ссылки на аудио"
+grep -q 'download>Скачать' <<<"$EP_HTML" || fail "у ссылки скачивания нет атрибута download"
+grep -q 'id="inline-player"' <<<"$EP_HTML" || fail "на странице выпуска нет плеера"
+grep -q 'class="seek js-seek"' <<<"$EP_HTML" || fail "нет доступной полосы перемотки"
+grep -q 'Прослушиваний и просмотров: 0' <<<"$EP_HTML" && fail "нулевой счётчик выводится на сайте"
+
+echo "==> /episodes/2 (YouTube и видео)"
+EP2_HTML=$(curl -sf "$BASE/episodes/2") || fail "GET /episodes/2"
+grep -q 'href="'"$BASE"'/video/2/002-vtoroy.mp4"' <<<"$EP2_HTML" || fail "нет именованной ссылки на видео"
+grep -q 'href="https://youtu.be/smoke" target="_blank" rel="noopener noreferrer"' <<<"$EP2_HTML" \
+  || fail "на странице нет ссылки «Смотреть на YouTube»"
+
+echo "==> /sitemap.xml и /robots.txt"
+SITEMAP=$(curl -sf "$BASE/sitemap.xml") || fail "GET /sitemap.xml"
+grep -q "<loc>$BASE/episodes/1</loc>" <<<"$SITEMAP" || fail "в карте сайта нет выпуска 1"
+grep -q "<loc>$BASE/episodes</loc>" <<<"$SITEMAP" || fail "в карте сайта нет архива"
+ROBOTS=$(curl -sf "$BASE/robots.txt") || fail "GET /robots.txt"
+grep -q "Sitemap: $BASE/sitemap.xml" <<<"$ROBOTS" || fail "robots.txt не указывает карту сайта"
 
 echo "==> /feed.xml (аудио-фид)"
 curl -sf "$BASE/feed.xml" > "$FIX/feed.xml" || fail "GET /feed.xml"
@@ -184,13 +205,13 @@ assert eps[0]["downloads"]["total"] == 0, eps
 python3 - "$BASE" <<'PY' || fail "единый счётчик на сайте не равен скачиваниям + прослушиваниям"
 import json, re, sys, urllib.request
 base = sys.argv[1]
-html = urllib.request.urlopen(base + "/").read().decode()
-card = re.search(r'id=\"ep-1\".*?Скачиваний и прослушиваний: (\d+)', html, re.S)
-assert card, "нет счётчика в карточке эпизода 1"
+html = urllib.request.urlopen(base + "/episodes/1").read().decode()
+count = re.search(r'Прослушиваний и просмотров: (\d+)', html)
+assert count, "нет счётчика на странице эпизода 1"
 eps = json.load(urllib.request.urlopen(base + "/api/episodes"))
 e1 = next(e for e in eps if e["number"] == 1)
-want = e1["downloads"]["total"] + e1["plays"]
-assert int(card.group(1)) == want, (card.group(1), want)
+want = e1["downloads"]["total"] + e1["plays"] + e1["youtube_views"]
+assert int(count.group(1)) == want, (count.group(1), want)
 assert e1["plays"] == 1, e1
 PY
 

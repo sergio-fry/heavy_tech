@@ -1,0 +1,38 @@
+{{define "content"}}
+<section class="hero">
+  {{if .HasImage}}<img class="cover" src="{{.Image}}" alt="Обложка канала {{.ChannelTitle}}">
+  {{else}}<div class="cover-ph" aria-hidden="true">HT</div>{{end}}
+  <div class="hero-body">
+    <h1>{{.ChannelTitle}}</h1>
+    {{if .Tagline}}<p class="tagline">{{.Tagline}}</p>{{end}}
+    <p class="desc">{{.Description}}</p>
+    <div class="actions">
+      {{if .Latest}}<button class="btn btn-primary js-play" data-episode="{{.Latest.Number}}" data-src="{{.Latest.AudioURL}}" data-title="{{.Latest.Title}}" data-duration="{{.Latest.AudioDurationSecs}}"><span aria-hidden="true">&#9654;</span> Слушать последний выпуск</button>{{end}}
+      {{range .Subscribe}}<a class="btn" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{end}}
+      <button class="btn js-copy-rss" data-url="{{.FeedURL}}">Скопировать RSS</button>
+    </div>
+  </div>
+</section>
+
+{{if .About}}<section class="about">{{.About}}</section>{{end}}
+
+{{if not .Total}}
+<div class="empty">
+  <div class="big">Выпуски скоро появятся</div>
+  <div>Подпишитесь через <a href="{{.FeedURL}}">RSS</a>, чтобы не пропустить.</div>
+</div>
+{{else}}
+
+{{if .StartHere}}
+<section class="section">
+  <h2>С чего начать</h2>
+  <div class="cards">{{range .StartHere}}{{template "card" .}}{{end}}</div>
+</section>
+{{end}}
+
+<section class="section">
+  <div class="section-head"><h2>Последние выпуски</h2><a href="/episodes">Все выпуски</a></div>
+  <div class="cards">{{range .Episodes}}{{template "card" .}}{{end}}</div>
+</section>
+{{end}}
+{{end}}

@@ -178,8 +178,10 @@ type DownloadCounts struct {
 // EpisodeView — эпизод с носителями и агрегатами метрик за всё время.
 type EpisodeView struct {
 	Episode
-	Downloads DownloadCounts
-	Plays     int64
+	Downloads    DownloadCounts
+	Plays        int64
+	YouTubeViews int64     // последний снимок YouTube; 0 = неизвестно
+	Chapters     []Chapter // главы из описания ролика; пусто = нет
 }
 
 // ListEpisodes — все эпизоды с носителями, новые сверху (по published_at).
@@ -286,20 +288,117 @@ func (s *Store) ListEpisodesWithCounts() ([]EpisodeView, error) {
 	}
 	rows.Close()
 
+	youtube := map[int64]YouTubeSnapshot{}
+	rows, err = s.db.Query(`SELECT number, views, chapters FROM youtube_meta`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var number int64
+		var snap YouTubeSnapshot
+		var chaptersRaw string
+		if err := rows.Scan(&number, &snap.Views, &chaptersRaw); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(chaptersRaw), &snap.Chapters); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		youtube[number] = snap
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
 	out := make([]EpisodeView, 0, len(eps))
 	for _, e := range eps {
+		snap := youtube[e.Number]
 		v := EpisodeView{
 			Episode: e,
 			Downloads: DownloadCounts{
 				Audio: downloads[e.Number][KindAudio],
 				Video: downloads[e.Number][KindVideo],
 			},
-			Plays: plays[e.Number],
+			Plays:        plays[e.Number],
+			YouTubeViews: snap.Views,
+			Chapters:     snap.Chapters,
 		}
 		v.Downloads.Total = v.Downloads.Audio + v.Downloads.Video
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// YouTubeSnapshot — сохранённый снимок метаданных YouTube.
+type YouTubeSnapshot struct {
+	Views    int64
+	Chapters []Chapter
+}
+
+// YouTubeTarget — эпизод, которому пора обновить метаданные YouTube.
+type YouTubeTarget struct {
+	Number     int64
+	YouTubeURL string
+}
+
+// SaveYouTubeMeta сохраняет снимок просмотров и глав, обновляя запись эпизода.
+func (s *Store) SaveYouTubeMeta(number int64, videoID string, views int64, chapters []Chapter, at time.Time) error {
+	if chapters == nil {
+		chapters = []Chapter{}
+	}
+	raw, err := json.Marshal(chapters)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO youtube_meta (number, video_id, views, chapters, fetched_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (number) DO UPDATE SET
+			video_id = excluded.video_id,
+			views = excluded.views,
+			chapters = excluded.chapters,
+			fetched_at = excluded.fetched_at`,
+		number, videoID, views, string(raw), at.UTC().Unix())
+	return err
+}
+
+// YouTubeMeta читает снимок эпизода; sql.ErrNoRows, если снимка нет.
+func (s *Store) YouTubeMeta(number int64) (videoID string, views int64, chapters []Chapter, fetchedAt int64, err error) {
+	var raw string
+	err = s.db.QueryRow(`SELECT video_id, views, chapters, COALESCE(fetched_at, 0)
+		FROM youtube_meta WHERE number = ?`, number).Scan(&videoID, &views, &raw, &fetchedAt)
+	if err != nil {
+		return "", 0, nil, 0, err
+	}
+	if err := json.Unmarshal([]byte(raw), &chapters); err != nil {
+		return "", 0, nil, 0, err
+	}
+	return videoID, views, chapters, fetchedAt, nil
+}
+
+// ListYouTubeTargets — эпизоды со ссылкой YouTube, снимок которых старше cutoff
+// или отсутствует.
+func (s *Store) ListYouTubeTargets(cutoff time.Time) ([]YouTubeTarget, error) {
+	rows, err := s.db.Query(`SELECT e.number, e.youtube
+		FROM episodes e
+		LEFT JOIN youtube_meta m ON m.number = e.number
+		WHERE e.youtube <> '' AND (m.fetched_at IS NULL OR m.fetched_at < ?)
+		ORDER BY e.number`, cutoff.UTC().Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []YouTubeTarget
+	for rows.Next() {
+		var t YouTubeTarget
+		if err := rows.Scan(&t.Number, &t.YouTubeURL); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // episodeEqual сравнивает запись индекса с найденным в папке состоянием.
