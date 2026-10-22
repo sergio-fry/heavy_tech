@@ -17,5 +17,5 @@
 
 ## 4. Выкатка (по явной команде пользователя)
 
-- [ ] 4.1 Деплой: bump `heavytech_git_ref` в infra-репо на новый SHA, commit+push, `make run ANSIBLE_OPTS="--limit heavytech"`. Проверка: ansible recap без failed, сервис отвечает.
-- [ ] 4.2 Прод-смоук: `/api/episodes` содержит `host`/`guests`, карточки без участников рендерятся без линий, запуск ручного прохода автора по `episode.yaml` на CT. Проверка: curl-вывод соответствует сценариям дельт.
+- [x] 4.1 Деплой: bump `heavytech_git_ref` в infra-репо на новый SHA, commit+push, `make run ANSIBLE_OPTS="--limit heavytech"`. Проверка: ansible recap без failed, сервис отвечает.
+- [x] 4.2 Прод-смоук: `/api/episodes` содержит `host`/`guests`, карточки без участников рендерятся без линий, запуск ручного прохода автора по `episode.yaml` на CT. Проверка: curl-вывод соответствует сценариям дельт.
