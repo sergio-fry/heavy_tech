@@ -28,6 +28,6 @@
 
 ## 6. Выкатка на сервер (выполняется по явной команде пользователя)
 
-- [ ] 6.1 На CT `heavytech`: остановить контейнер, прогнать `scripts/migrate-to-numbers.sh` на `/mnt/storage/heavytech/data/podcast`, сверить отчёт и структуру папок. Проверка: отчёт миграции без ошибок, у каждой папки есть валидный `episode.yaml`, права 65532 сохранены.
-- [ ] 6.2 Деплой: bump `heavytech_git_ref` в infra-репо на новый SHA, commit+push, `make run ANSIBLE_OPTS="--limit heavytech"`. Проверка: ansible recap без failed, сервис отвечает.
-- [ ] 6.3 Прод-смоук: `/feed.xml` и `/feed-video.xml` валидны и содержат выпуски с новыми guid, `/audio/{n}` отдаёт 200, суммы счётчиков на нуле, сайт рендерит карточки. Проверка: curl-вывод соответствует сценариям дельт.
+- [x] 6.1 На CT `heavytech`: остановить контейнер, прогнать `scripts/migrate-to-numbers.sh` на `/mnt/storage/heavytech/data/podcast`, сверить отчёт и структуру папок. Проверка: отчёт миграции без ошибок, у каждой папки есть валидный `episode.yaml`, права 65532 сохранены.
+- [x] 6.2 Деплой: bump `heavytech_git_ref` в infra-репо на новый SHA, commit+push, `make run ANSIBLE_OPTS="--limit heavytech"`. Проверка: ansible recap без failed, сервис отвечает.
+- [x] 6.3 Прод-смоук: `/feed.xml` и `/feed-video.xml` валидны и содержат выпуски с новыми guid, `/audio/{n}` отдаёт 200, суммы счётчиков на нуле, сайт рендерит карточки. Проверка: curl-вывод соответствует сценариям дельт.
