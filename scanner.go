@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +23,10 @@ var digitsFolderRe = regexp.MustCompile(`^[0-9]+$`)
 
 // metaFileName — обязательный манифест эпизода внутри папки.
 const metaFileName = "episode.yaml"
+
+// descriptionFileName — необязательное markdown-описание выпуска в папке эпизода.
+// Приоритетнее поля description: в episode.yaml.
+const descriptionFileName = "description.md"
 
 // mediaFormat — классификация носителя по расширению (design D3):
 // единственное место правды о виде и MIME.
@@ -49,7 +56,8 @@ type mediaMeta struct {
 // episodeMeta — содержимое обязательного episode.yaml.
 type episodeMeta struct {
 	Title       string     `yaml:"title"`
-	Description string     `yaml:"description"`
+	Description string     `yaml:"description"`  // legacy-фолбэк, если нет description.md
+	YouTube     string     `yaml:"youtube"`      // ссылка на видеоверсию выпуска
 	PublishedAt string     `yaml:"published_at"` // YYYY-MM-DD
 	Audio       *mediaMeta `yaml:"audio"`
 	Video       *mediaMeta `yaml:"video"`
@@ -128,14 +136,24 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 	if meta.Audio == nil && meta.Video == nil {
 		return Episode{}, fmt.Errorf("%s: нужна хотя бы одна секция audio: или video:", metaPath)
 	}
+	youtube, err := validateYouTube(meta.YouTube)
+	if err != nil {
+		return Episode{}, fmt.Errorf("%s: %w", metaPath, err)
+	}
+
+	referenced := map[string]bool{metaFileName: true}
+	description, err := resolveDescription(dir, name, meta.Description, referenced)
+	if err != nil {
+		return Episode{}, err
+	}
 
 	ep := Episode{
 		Number:      number,
 		Title:       strings.TrimSpace(meta.Title),
-		Description: strings.TrimSpace(meta.Description),
+		Description: description,
+		YouTube:     youtube,
 		PublishedAt: publishedAt,
 	}
-	referenced := map[string]bool{metaFileName: true}
 	for _, section := range []struct {
 		kind string
 		meta *mediaMeta
@@ -167,6 +185,43 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 		return Episode{}, fmt.Errorf("папка %q: файл %q не упомянут в %s", name, entry.Name(), metaFileName)
 	}
 	return ep, nil
+}
+
+// resolveDescription выбирает источник описания: description.md приоритетнее поля
+// description: в meta. Файл помечается известным, чтобы не считаться лишним.
+func resolveDescription(dir, folder, metaDescription string, referenced map[string]bool) (string, error) {
+	path := filepath.Join(dir, descriptionFileName)
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if strings.TrimSpace(metaDescription) != "" {
+			log.Printf("папка %q: %s приоритетнее description: в %s", folder, descriptionFileName, metaFileName)
+		}
+		referenced[descriptionFileName] = true
+		return strings.TrimSpace(string(raw)), nil
+	case errors.Is(err, os.ErrNotExist):
+		return strings.TrimSpace(metaDescription), nil
+	default:
+		return "", fmt.Errorf("папка %q: не прочитать %s: %w", folder, descriptionFileName, err)
+	}
+}
+
+// validateYouTube проверяет форму ссылки на видеоверсию выпуска: абсолютный
+// http(s) URL с хостом. Существование ролика не проверяется.
+func validateYouTube(raw string) (string, error) {
+	link := strings.TrimSpace(raw)
+	if link == "" {
+		return "", nil
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return "", fmt.Errorf("youtube: некорректный URL %q: %w", raw, err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if (scheme != "http" && scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("youtube: нужен абсолютный http(s) URL, получено %q", raw)
+	}
+	return link, nil
 }
 
 // resolveMedia проверяет файл из media-секции: он существует, лежит прямо в папке

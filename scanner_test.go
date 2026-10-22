@@ -451,3 +451,121 @@ func TestHumanSize(t *testing.T) {
 		}
 	}
 }
+
+// TestScanDescriptionMarkdown — description.md задаёт описание и не считается
+// лишним файлом в папке эпизода.
+func TestScanDescriptionMarkdown(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "z.m4a"), map[string]string{
+		"z.m4a":          "x",
+		"description.md": "  ## Шоу-ноуты\n\n- пункт\n  ",
+	})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || eps[0].Description != "## Шоу-ноуты\n\n- пункт" {
+		t.Fatalf("описание из description.md разобрано неверно: %+v", eps)
+	}
+}
+
+// TestScanDescriptionFileWins — при обоих источниках побеждает файл.
+func TestScanDescriptionFileWins(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", `title: X
+published_at: 2026-10-01
+description: Старое описание
+audio:
+  file: z.m4a
+`, map[string]string{"z.m4a": "x", "description.md": "**Новое** описание"})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || eps[0].Description != "**Новое** описание" {
+		t.Fatalf("файл не приоритетнее meta: %+v", eps)
+	}
+}
+
+// TestScanDescriptionFallback — без файла описание берётся из meta.
+func TestScanDescriptionFallback(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", `title: X
+published_at: 2026-10-01
+description: О чём выпуск
+audio:
+  file: z.m4a
+`, map[string]string{"z.m4a": "x"})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || eps[0].Description != "О чём выпуск" {
+		t.Fatalf("фолбэк на description: не сработал: %+v", eps)
+	}
+}
+
+// TestScanDescriptionOptional — отсутствие описания допустимо.
+func TestScanDescriptionOptional(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "z.m4a"), map[string]string{"z.m4a": "x"})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || eps[0].Description != "" {
+		t.Fatalf("описание должно быть пустым: %+v", eps)
+	}
+}
+
+// TestSyncUpdatesDescriptionFile — правка description.md обновляет индекс.
+func TestSyncUpdatesDescriptionFile(t *testing.T) {
+	dir := writePodcastDir(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "7", metaAudio("X", "2026-10-01", "z.m4a"), map[string]string{
+		"z.m4a":          "x",
+		"description.md": "Старое",
+	})
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "7", descriptionFileName)
+	if err := os.WriteFile(path, []byte("Новое описание"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, updated, _, err := SyncPodcastDir(dir, st); err != nil || updated != 1 {
+		t.Fatalf("правка description.md: updated=%d err=%v", updated, err)
+	}
+	ep, _ := st.EpisodeByNumber(7)
+	if ep.Description != "Новое описание" {
+		t.Fatalf("описание в индексе: %q", ep.Description)
+	}
+}
+
+// TestScanYouTubeLink — валидная ссылка сохраняется, отсутствие допустимо.
+func TestScanYouTubeLink(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", `title: X
+published_at: 2026-10-01
+youtube: https://youtu.be/abc123
+audio:
+  file: z.m4a
+`, map[string]string{"z.m4a": "x"})
+	writeEpisode(t, dir, "8", metaAudio("Y", "2026-10-02", "z.m4a"), map[string]string{"z.m4a": "x"})
+	eps := mustScan(t, dir)
+	if len(eps) != 2 {
+		t.Fatalf("эпизодов %d, хотели 2", len(eps))
+	}
+	if eps[0].YouTube != "https://youtu.be/abc123" {
+		t.Fatalf("youtube эпизода 7: %q", eps[0].YouTube)
+	}
+	if eps[1].YouTube != "" {
+		t.Fatalf("youtube эпизода 8: %q", eps[1].YouTube)
+	}
+}
+
+// TestScanYouTubeInvalid — не абсолютный http(s) URL — ошибка синхронизации.
+func TestScanYouTubeInvalid(t *testing.T) {
+	for _, link := range []string{"youtu.be/abc123", "javascript:alert(1)", "ftp://example.com/video"} {
+		t.Run(link, func(t *testing.T) {
+			dir := writePodcastDir(t)
+			writeEpisode(t, dir, "7", `title: X
+published_at: 2026-10-01
+youtube: `+link+`
+audio:
+  file: z.m4a
+`, map[string]string{"z.m4a": "x"})
+			if _, err := ScanFolder(dir); err == nil {
+				t.Fatalf("ссылка %q должна быть ошибкой синхронизации", link)
+			}
+		})
+	}
+}

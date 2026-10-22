@@ -227,8 +227,9 @@ func TestAudioFeed(t *testing.T) {
 		t.Fatalf("первый item %q, хотели «Vtoroy»", feed.Channel.Items[0].Title)
 	}
 	first := feed.Channel.Items[0]
-	wantURL := testBaseURL + "/audio/2"
-	if first.GUID.Value != wantURL || first.GUID.IsPermaLink != "true" {
+	wantGUID := testBaseURL + "/audio/2"
+	wantURL := testBaseURL + "/audio/2/002-vtoroy.mp3"
+	if first.GUID.Value != wantGUID || first.GUID.IsPermaLink != "true" {
 		t.Fatalf("guid %+v", first.GUID)
 	}
 	if first.Enclosure.URL != wantURL || first.Enclosure.Length != 20000 || first.Enclosure.Type != "audio/mpeg" {
@@ -264,21 +265,53 @@ func TestVideoFeed(t *testing.T) {
 		t.Fatalf("порядок/номера: %q, %q", feed.Channel.Items[0].Episode, feed.Channel.Items[1].Episode)
 	}
 	first := feed.Channel.Items[0]
-	wantURL := testBaseURL + "/video/3"
-	if first.GUID.Value != wantURL || first.Enclosure.URL != wantURL {
+	wantGUID := testBaseURL + "/video/3"
+	wantURL := testBaseURL + "/video/3/003-tolko-video.mkv"
+	if first.GUID.Value != wantGUID || first.Enclosure.URL != wantURL {
 		t.Fatalf("guid/enclosure: %+v / %+v", first.GUID, first.Enclosure)
 	}
 	if first.Enclosure.Type != "video/x-matroska" || first.Enclosure.Length != 7000 {
 		t.Fatalf("enclosure эпизода 3: %+v", first.Enclosure)
 	}
 	second := feed.Channel.Items[1]
-	if second.Enclosure.Type != "video/mp4" || second.Enclosure.Length != 5000 || second.GUID.Value != testBaseURL+"/video/2" {
-		t.Fatalf("эпизод 2: %+v", second.Enclosure)
+	if second.Enclosure.Type != "video/mp4" || second.Enclosure.Length != 5000 ||
+		second.GUID.Value != testBaseURL+"/video/2" ||
+		second.Enclosure.URL != testBaseURL+"/video/2/002-vtoroy.mp4" {
+		t.Fatalf("эпизод 2: %+v / %+v", second.GUID, second.Enclosure)
 	}
 	for _, it := range feed.Channel.Items {
 		if strings.Contains(it.GUID.Value, "/audio/") {
 			t.Fatalf("в видео-фиде аудио-guid: %q", it.GUID.Value)
 		}
+	}
+}
+
+// TestFeedDescriptionHTML — description фида содержит HTML, отрендеренный из
+// markdown-исходника, а не саму markdown-разметку.
+func TestFeedDescriptionHTML(t *testing.T) {
+	env := newTestEnv(t)
+	writeEpisode(t, env.dir, "9", `title: Markdown
+published_at: 2026-10-25
+audio:
+  file: zapis.mp3
+`, map[string]string{
+		"zapis.mp3":      "x",
+		"description.md": "**важно** и [гость](https://example.com)",
+	})
+	env.do(t, "POST", "/admin/rescan", "curl/8", nil, nil)
+
+	feed := fetchFeed(t, env, "/feed.xml")
+	it := feed.Channel.Items[0]
+	if it.Episode != "9" {
+		t.Fatalf("первый item — эпизод %q, хотели 9", it.Episode)
+	}
+	for _, want := range []string{"<p>", "<strong>важно</strong>", `href="https://example.com"`} {
+		if !strings.Contains(it.Description, want) {
+			t.Fatalf("в description нет %q: %q", want, it.Description)
+		}
+	}
+	if strings.Contains(it.Description, "**важно**") {
+		t.Fatalf("markdown не отрендерен: %q", it.Description)
 	}
 }
 
@@ -339,6 +372,49 @@ func TestFeedEmpty(t *testing.T) {
 	}
 }
 
+// TestAPIYouTube — поле youtube отдаёт ссылку эпизода и пустую строку без неё.
+func TestAPIYouTube(t *testing.T) {
+	env := newTestEnv(t)
+	writeEpisode(t, env.dir, "2", `title: Vtoroy
+published_at: 2026-10-15
+youtube: https://youtu.be/abc123
+audio:
+  file: zapis.mp3
+video:
+  file: efir.mp4
+`, map[string]string{
+		"zapis.mp3":      strings.Repeat("B", 20000),
+		"efir.mp4":       strings.Repeat("C", 5000),
+		"description.md": "**важно** и [гость](https://example.com)",
+	})
+	if rec := env.do(t, "POST", "/admin/rescan", "curl/8", nil, nil); rec.Code != 200 {
+		t.Fatalf("рескан: код %d", rec.Code)
+	}
+
+	rec := env.do(t, "GET", "/api/episodes", "curl/8", nil, nil)
+	var eps []apiEpisode
+	if err := json.Unmarshal(rec.Body.Bytes(), &eps); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	byNumber := map[int64]apiEpisode{}
+	for _, e := range eps {
+		byNumber[e.Number] = e
+	}
+	if got := byNumber[2].YouTube; got != "https://youtu.be/abc123" {
+		t.Fatalf("youtube эпизода 2: %q", got)
+	}
+	if got := byNumber[1].YouTube; got != "" {
+		t.Fatalf("youtube эпизода 1: %q", got)
+	}
+	// Описание в API — markdown-исходник, без HTML.
+	if got := byNumber[2].Description; got != "**важно** и [гость](https://example.com)" {
+		t.Fatalf("описание эпизода 2: %q", got)
+	}
+	if byNumber[3].Description != "" {
+		t.Fatalf("описание эпизода 3: %q", byNumber[3].Description)
+	}
+}
+
 // --- 4.2 JSON API ---
 
 func TestAPIEpisodes(t *testing.T) {
@@ -364,6 +440,9 @@ func TestAPIEpisodes(t *testing.T) {
 	if e.Title != "Первый выпуск" || e.Description != "О чём этот подкаст" {
 		t.Fatalf("метаданные: %+v", e)
 	}
+	if e.YouTube != "" {
+		t.Fatalf("youtube эпизода без ссылки: %q", e.YouTube)
+	}
 	if e.PublishedAt != "2026-10-01" {
 		t.Fatalf("published_at %q", e.PublishedAt)
 	}
@@ -371,7 +450,7 @@ func TestAPIEpisodes(t *testing.T) {
 		t.Fatalf("media: %+v", e.Media)
 	}
 	m := e.Media[0]
-	if m.Kind != KindAudio || m.URL != testBaseURL+"/audio/1" || m.Size != 12345 || m.Duration != 1872 {
+	if m.Kind != KindAudio || m.URL != testBaseURL+"/audio/1/001-pervyy-vypusk.aac" || m.Size != 12345 || m.Duration != 1872 {
 		t.Fatalf("media эпизода 1: %+v", m)
 	}
 	// эпизод 2: оба носителя, разбивка счётчиков присутствует
@@ -382,7 +461,7 @@ func TestAPIEpisodes(t *testing.T) {
 	if e2.Media[0].Kind != KindAudio || e2.Media[1].Kind != KindVideo {
 		t.Fatalf("порядок media: %+v", e2.Media)
 	}
-	if e2.Media[1].URL != testBaseURL+"/video/2" || e2.Media[1].Size != 5000 {
+	if e2.Media[1].URL != testBaseURL+"/video/2/002-vtoroy.mp4" || e2.Media[1].Size != 5000 {
 		t.Fatalf("видео в API: %+v", e2.Media[1])
 	}
 	if e2.Downloads.Audio != 0 || e2.Downloads.Video != 0 || e2.Downloads.Total != 0 || e2.Plays != 0 {
@@ -394,6 +473,22 @@ func TestAPIEpisodes(t *testing.T) {
 
 func TestHomeShowsEpisode(t *testing.T) {
 	env := newTestEnv(t)
+	// markdown-описание и YouTube-ссылка у эпизода 2.
+	writeEpisode(t, env.dir, "2", `title: Vtoroy
+published_at: 2026-10-15
+youtube: https://youtu.be/vtoroy
+audio:
+  file: zapis.mp3
+video:
+  file: efir.mp4
+`, map[string]string{
+		"zapis.mp3":      strings.Repeat("B", 20000),
+		"efir.mp4":       strings.Repeat("C", 5000),
+		"description.md": "**важно** и [гость](https://example.com)\n\n- пункт",
+	})
+	if rec := env.do(t, "POST", "/admin/rescan", "curl/8", nil, nil); rec.Code != 200 {
+		t.Fatalf("рескан: код %d", rec.Code)
+	}
 	rec := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil)
 	if rec.Code != 200 {
 		t.Fatalf("код %d", rec.Code)
@@ -415,13 +510,18 @@ func TestHomeShowsEpisode(t *testing.T) {
 		`js-latest" data-episode="2"`, // последний выпуск с аудио
 		"/feed.xml",
 		"/feed-video.xml",
-		`href="` + testBaseURL + `/audio/1"`,
-		`href="` + testBaseURL + `/video/2"`,
-		`href="` + testBaseURL + `/video/3"`,
+		`href="` + testBaseURL + `/audio/1/001-pervyy-vypusk.aac"`,
+		`src="` + testBaseURL + `/audio/1/001-pervyy-vypusk.aac"`,
+		`href="` + testBaseURL + `/video/2/002-vtoroy.mp4"`,
+		`href="` + testBaseURL + `/video/3/003-tolko-video.mkv"`,
+		`download>Скачать Аудио`,
 		"12,1 КБ",
 		"19,5 КБ",
-		"Скачиваний: 0",
-		"Прослушиваний: 0",
+		"Скачиваний и прослушиваний: 0",
+		"<strong>важно</strong>",
+		`href="https://example.com"`,
+		"Смотреть на YouTube",
+		`href="https://youtu.be/vtoroy" target="_blank" rel="noopener noreferrer"`,
 		"31:12", // 1872 c
 	} {
 		if !strings.Contains(html, want) {
@@ -434,6 +534,10 @@ func TestHomeShowsEpisode(t *testing.T) {
 	// плеер только у эпизодов 1 и 2 (у эпизода 3 только видео)
 	if n := strings.Count(html, `class="play js-play"`); n != 2 {
 		t.Fatalf("плееров %d, хотели 2", n)
+	}
+	// действие YouTube только у эпизода со ссылкой
+	if n := strings.Count(html, "Смотреть на YouTube"); n != 1 {
+		t.Fatalf("кнопок YouTube %d, хотели 1", n)
 	}
 	// новые сверху
 	if strings.Index(html, "Tolko video") > strings.Index(html, "Vtoroy") ||
@@ -488,28 +592,30 @@ func TestBuildPageData(t *testing.T) {
 			Number:      3,
 			Title:       "Только видео",
 			PublishedAt: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
-			Files:       []EpisodeFile{{Kind: KindVideo, Size: 7000, Mime: "video/mp4"}},
+			Files:       []EpisodeFile{{Kind: KindVideo, FilePath: "/p/3/efir.mkv", Size: 7000, Mime: "video/mp4"}},
 		},
 	}
 	second := EpisodeView{
 		Episode: Episode{
 			Number:      2,
 			Title:       "Vtoroy",
+			Description: "**важно**",
+			YouTube:     "https://youtu.be/vtoroy",
 			PublishedAt: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC),
 			Files: []EpisodeFile{
-				{Kind: KindAudio, Size: 20000, Mime: "audio/mpeg"},
-				{Kind: KindVideo, Size: 5000, Mime: "video/mp4"},
+				{Kind: KindAudio, FilePath: "/p/2/zapis.mp3", Size: 20000, Mime: "audio/mpeg"},
+				{Kind: KindVideo, FilePath: "/p/2/efir.mp4", Size: 5000, Mime: "video/mp4"},
 			},
 		},
-		Downloads: DownloadCounts{Audio: 3, Video: 1, Total: 4},
-		Plays:     1,
+		Downloads: DownloadCounts{Audio: 120, Video: 30, Total: 150},
+		Plays:     5,
 	}
 	first := EpisodeView{
 		Episode: Episode{
 			Number:      1,
 			Title:       "Первый выпуск",
 			PublishedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-			Files:       []EpisodeFile{{Kind: KindAudio, Size: 12345, Mime: "audio/aac", DurationSeconds: 1872}},
+			Files:       []EpisodeFile{{Kind: KindAudio, FilePath: "/p/1/zapis.aac", Size: 12345, Mime: "audio/aac", DurationSeconds: 1872}},
 		},
 	}
 	views := []EpisodeView{videoOnly, second, first}
@@ -533,14 +639,30 @@ func TestBuildPageData(t *testing.T) {
 	if newest.Number != 3 || newest.HasAudio || len(newest.Media) != 1 || newest.Media[0].Kind != KindVideo {
 		t.Fatalf("видео-выпуск: %+v", newest)
 	}
+	if newest.Media[0].URL != testBaseURL+"/video/3/003-tolko-video.mkv" {
+		t.Fatalf("видео-ссылка: %q", newest.Media[0].URL)
+	}
 	if mid.Number != 2 || !mid.HasAudio || len(mid.Media) != 2 {
 		t.Fatalf("эпизод 2: %+v", mid)
 	}
-	if mid.Downloads != 4 || mid.DownloadsAudio != 3 || mid.DownloadsVideo != 1 || mid.Plays != 1 {
+	if mid.Downloads != 150 || mid.DownloadsAudio != 120 || mid.DownloadsVideo != 30 || mid.Plays != 5 {
 		t.Fatalf("счётчики эпизода 2: %+v", mid)
 	}
-	if mid.Media[0].URL != testBaseURL+"/audio/2" || mid.Media[1].URL != testBaseURL+"/video/2" {
+	if mid.Engagement != 155 {
+		t.Fatalf("единый счётчик эпизода 2: %d, хотели 155", mid.Engagement)
+	}
+	if !strings.Contains(string(mid.Description), "<strong>важно</strong>") {
+		t.Fatalf("описание не отрендерено: %q", mid.Description)
+	}
+	if mid.YouTube != "https://youtu.be/vtoroy" {
+		t.Fatalf("youtube эпизода 2: %q", mid.YouTube)
+	}
+	if mid.Media[0].URL != testBaseURL+"/audio/2/002-vtoroy.mp3" ||
+		mid.Media[1].URL != testBaseURL+"/video/2/002-vtoroy.mp4" {
 		t.Fatalf("ссылки на носители: %+v", mid.Media)
+	}
+	if mid.AudioURL != testBaseURL+"/audio/2/002-vtoroy.mp3" {
+		t.Fatalf("AudioURL: %q", mid.AudioURL)
 	}
 	if oldest.DateLabel != "1 октября 2026" || oldest.AudioDurationSecs != 1872 || oldest.AudioDurationLabel != "31:12" {
 		t.Fatalf("эпизод 1: %+v", oldest)
@@ -838,6 +960,26 @@ func TestPlayBeacon(t *testing.T) {
 	}
 }
 
+// TestDownloadDedupAcrossNamedAndNumberedURLs — один клиент в те же сутки,
+// запросив именованный и номерной URL одного носителя, даёт одно событие.
+func TestDownloadDedupAcrossNamedAndNumberedURLs(t *testing.T) {
+	env := newTestEnv(t)
+	env.server.now = func() time.Time { return time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) }
+	headers := map[string]string{"X-Forwarded-For": "203.0.113.9"}
+	for _, path := range []string{"/audio/1/001-pervyy-vypusk.aac", "/audio/1"} {
+		if rec := env.do(t, "GET", path, "App/1", nil, headers); rec.Code != 200 {
+			t.Fatalf("%s: код %d", path, rec.Code)
+		}
+	}
+	counts, err := env.store.CountDownloads(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Audio != 1 || counts.Total != 1 {
+		t.Fatalf("скачивания: %+v, хотели ровно 1", counts)
+	}
+}
+
 // --- согласованность счётчиков в HTML и JSON ---
 
 func TestCountersConsistentHTMLAndJSON(t *testing.T) {
@@ -857,8 +999,9 @@ func TestCountersConsistentHTMLAndJSON(t *testing.T) {
 		map[string]string{"Content-Type": "application/json"})
 
 	html := env.do(t, "GET", "/", "Mozilla/5.0", nil, nil).Body.String()
-	if !strings.Contains(html, "Скачиваний: 4") || !strings.Contains(html, "Прослушиваний: 1") {
-		t.Fatal("HTML не показывает 4 скачивания / 1 прослушивание")
+	// сайт показывает единый счётчик: 4 скачивания + 1 прослушивание = 5
+	if !strings.Contains(html, "Скачиваний и прослушиваний: 5") {
+		t.Fatal("HTML не показывает единый счётчик 5 (4 скачивания + 1 прослушивание)")
 	}
 	var eps []apiEpisode
 	rec := env.do(t, "GET", "/api/episodes", "curl/8", nil, nil)

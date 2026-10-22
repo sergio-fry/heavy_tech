@@ -57,7 +57,7 @@ func TestSchemaNumberedModel(t *testing.T) {
 		return out
 	}
 	ep := cols("episodes")
-	if !ep["number"] || ep["slug"] || ep["file_path"] {
+	if !ep["number"] || !ep["youtube"] || ep["slug"] || ep["file_path"] {
 		t.Fatalf("episodes: %v", ep)
 	}
 	files := cols("episode_files")
@@ -97,6 +97,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 		Number:      7,
 		Title:       "Седьмой",
 		Description: "Описание",
+		YouTube:     "https://youtu.be/abc123",
 		PublishedAt: pub,
 		Files: []EpisodeFile{
 			{Kind: KindAudio, FilePath: "/p/7/a.m4a", Mime: "audio/x-m4a", Size: 100, DurationSeconds: 60, FileMtime: 111},
@@ -110,7 +111,8 @@ func TestStoreSyncCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EpisodeByNumber: %v", err)
 	}
-	if got.Title != "Седьмой" || len(got.Files) != 2 || !got.PublishedAt.Equal(pub) {
+	if got.Title != "Седьмой" || len(got.Files) != 2 || !got.PublishedAt.Equal(pub) ||
+		got.YouTube != "https://youtu.be/abc123" {
 		t.Fatalf("прочитан неверно: %+v", got)
 	}
 	if v, ok := got.File(KindVideo); !ok || v.Resolution != "1920x1080" || v.Size != 900 {
@@ -122,15 +124,26 @@ func TestStoreSyncCRUD(t *testing.T) {
 		t.Fatalf("no-op: %d/%d/%d err=%v", added, updated, removed, err)
 	}
 
-	// обновление заголовка и носителя
+	// обновление заголовка, YouTube-ссылки и носителя
 	ep.Title = "Седьмой (обновлён)"
+	ep.YouTube = "https://www.youtube.com/watch?v=xyz"
 	ep.Files[0].Size = 200
 	if added, updated, removed, err := st.Sync([]Episode{ep}); err != nil || added != 0 || updated != 1 || removed != 0 {
 		t.Fatalf("обновление: %d/%d/%d err=%v", added, updated, removed, err)
 	}
 	got, _ = st.EpisodeByNumber(7)
-	if got.Title != "Седьмой (обновлён)" || got.Files[0].Size != 200 || len(got.Files) != 2 {
+	if got.Title != "Седьмой (обновлён)" || got.YouTube != "https://www.youtube.com/watch?v=xyz" ||
+		got.Files[0].Size != 200 || len(got.Files) != 2 {
 		t.Fatalf("после обновления: %+v", got)
+	}
+
+	// снятие ссылки — тоже изменение записи
+	ep.YouTube = ""
+	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+		t.Fatalf("снятие youtube: updated=%d err=%v", updated, err)
+	}
+	if got, _ = st.EpisodeByNumber(7); got.YouTube != "" {
+		t.Fatalf("youtube не снят: %+v", got)
 	}
 
 	// метрики и их сброс вместе с эпизодом

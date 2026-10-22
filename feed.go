@@ -113,14 +113,13 @@ func BuildFeed(ch Channel, baseURL string, views []EpisodeView, kind string, now
 		if !ok {
 			continue
 		}
-		url := baseURL + "/" + kind + "/" + strconv.FormatInt(v.Number, 10)
 		c.Items = append(c.Items, item{
 			Title:       v.Title,
-			GUID:        guid{IsPermaLink: "true", Value: url},
+			GUID:        guid{IsPermaLink: "true", Value: MediaGUID(baseURL, kind, v.Number)},
 			PubDate:     v.PublishedAt.UTC().Format(time.RFC1123Z),
-			Description: v.Description,
+			Description: string(RenderDescription(v.Description)),
 			Enclosure: enclosure{
-				URL:    url,
+				URL:    MediaURL(baseURL, kind, v.Number, v.Title, file),
 				Length: file.Size,
 				Type:   file.Mime,
 			},

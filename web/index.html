@@ -112,7 +112,14 @@
   .ep h3 { margin: 0; font-size: 1.12rem; letter-spacing: -.01em; }
   .ep .meta { color: var(--muted); font-size: .85rem; margin: .2rem 0 .5rem; }
   .ep .meta .count { color: var(--muted); opacity: .8; }
-  .ep p { margin: 0 0 .9rem; color: var(--text); }
+  .ep .desc { margin: 0 0 .9rem; color: var(--text); }
+  .ep .desc > :first-child { margin-top: 0; }
+  .ep .desc > :last-child { margin-bottom: 0; }
+  .ep .desc p { margin: 0 0 .6rem; }
+  .ep .desc ul, .ep .desc ol { margin: 0 0 .6rem; padding-left: 1.3rem; }
+  .ep .desc li { margin: .15rem 0; }
+  .ep .desc pre { overflow-x: auto; }
+  .ep .desc blockquote { margin: 0 0 .6rem; padding-left: .8rem; border-left: 3px solid var(--border); color: var(--muted); }
   .downloads { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .85rem; }
   .downloads .btn { padding: .4rem .85rem; font-size: .85rem; font-weight: 500; }
   .player { display: flex; align-items: center; gap: .85rem; }
@@ -191,9 +198,8 @@
     <div class="kicker">Выпуск №{{.Number}}</div>
     <h3>{{.Title}}</h3>
     <div class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}
-      · <span class="count">Скачиваний: {{.Downloads}}</span>
-      · <span class="count">Прослушиваний: {{.Plays}}</span></div>
-    {{if .Description}}<p>{{.Description}}</p>{{end}}
+      · <span class="count">Скачиваний и прослушиваний: {{.Engagement}}</span></div>
+    {{if .Description}}<div class="desc">{{.Description}}</div>{{end}}
     {{if .HasAudio}}
     <div class="player">
       <button class="play js-play" data-episode="{{.Number}}" aria-label="Слушать: {{.Title}}">&#9654;</button>
@@ -206,6 +212,7 @@
     {{end}}
     <div class="downloads">
       {{range .Media}}<a class="btn dl" href="{{.URL}}" download>Скачать {{.Label}} · {{.SizeLabel}}</a>{{end}}
+      {{if .YouTube}}<a class="btn" href="{{.YouTube}}" target="_blank" rel="noopener noreferrer">Смотреть на YouTube</a>{{end}}
     </div>
   </div>
 </article>

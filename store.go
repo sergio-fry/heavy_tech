@@ -103,7 +103,8 @@ type EpisodeFile struct {
 type Episode struct {
 	Number      int64
 	Title       string
-	Description string
+	Description string // markdown-исходник описания
+	YouTube     string // ссылка на видеоверсию выпуска; пустая = нет
 	PublishedAt time.Time
 	Files       []EpisodeFile
 }
@@ -122,8 +123,8 @@ func (e Episode) File(kind string) (EpisodeFile, bool) {
 func (s *Store) EpisodeByNumber(number int64) (Episode, error) {
 	var e Episode
 	var pubDate string
-	err := s.db.QueryRow(`SELECT number, title, description, published_at FROM episodes WHERE number = ?`, number).
-		Scan(&e.Number, &e.Title, &e.Description, &pubDate)
+	err := s.db.QueryRow(`SELECT number, title, description, youtube, published_at FROM episodes WHERE number = ?`, number).
+		Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate)
 	if err != nil {
 		return e, err
 	}
@@ -154,7 +155,7 @@ type EpisodeView struct {
 
 // ListEpisodes — все эпизоды с носителями, новые сверху (по published_at).
 func (s *Store) ListEpisodes() ([]Episode, error) {
-	rows, err := s.db.Query(`SELECT number, title, description, published_at
+	rows, err := s.db.Query(`SELECT number, title, description, youtube, published_at
 		FROM episodes ORDER BY published_at DESC, number DESC`)
 	if err != nil {
 		return nil, err
@@ -163,7 +164,7 @@ func (s *Store) ListEpisodes() ([]Episode, error) {
 	for rows.Next() {
 		var e Episode
 		var pubDate string
-		if err := rows.Scan(&e.Number, &e.Title, &e.Description, &pubDate); err != nil {
+		if err := rows.Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -279,7 +280,7 @@ func (s *Store) ListEpisodesWithCounts() ([]EpisodeView, error) {
 
 // episodeEqual сравнивает запись индекса с найденным в папке состоянием.
 func episodeEqual(a, b Episode) bool {
-	if a.Number != b.Number || a.Title != b.Title || a.Description != b.Description {
+	if a.Number != b.Number || a.Title != b.Title || a.Description != b.Description || a.YouTube != b.YouTube {
 		return false
 	}
 	if !a.PublishedAt.Equal(b.PublishedAt) || len(a.Files) != len(b.Files) {
@@ -325,14 +326,14 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 	}()
 
 	have := map[int64]Episode{}
-	rows, err := tx.Query(`SELECT number, title, description, published_at FROM episodes`)
+	rows, err := tx.Query(`SELECT number, title, description, youtube, published_at FROM episodes`)
 	if err != nil {
 		return 0, 0, 0, err
 	}
 	for rows.Next() {
 		var e Episode
 		var pubDate string
-		if err = rows.Scan(&e.Number, &e.Title, &e.Description, &pubDate); err != nil {
+		if err = rows.Scan(&e.Number, &e.Title, &e.Description, &e.YouTube, &pubDate); err != nil {
 			rows.Close()
 			return 0, 0, 0, err
 		}
@@ -382,8 +383,8 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 		prev, ok := have[e.Number]
 		switch {
 		case !ok:
-			if _, err = tx.Exec(`INSERT INTO episodes (number, title, description, published_at, discovered_at)
-				VALUES (?, ?, ?, ?, ?)`, e.Number, e.Title, e.Description, pubDate, time.Now().UTC()); err != nil {
+			if _, err = tx.Exec(`INSERT INTO episodes (number, title, description, youtube, published_at, discovered_at)
+				VALUES (?, ?, ?, ?, ?, ?)`, e.Number, e.Title, e.Description, e.YouTube, pubDate, time.Now().UTC()); err != nil {
 				return 0, 0, 0, err
 			}
 			if err = insertFiles(tx, e); err != nil {
@@ -391,8 +392,8 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 			}
 			added++
 		case !episodeEqual(prev, e):
-			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, published_at = ? WHERE number = ?`,
-				e.Title, e.Description, pubDate, e.Number); err != nil {
+			if _, err = tx.Exec(`UPDATE episodes SET title = ?, description = ?, youtube = ?, published_at = ? WHERE number = ?`,
+				e.Title, e.Description, e.YouTube, pubDate, e.Number); err != nil {
 				return 0, 0, 0, err
 			}
 			if _, err = tx.Exec(`DELETE FROM episode_files WHERE number = ?`, e.Number); err != nil {

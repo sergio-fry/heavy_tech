@@ -64,6 +64,11 @@ func NewServer(cfg Config, ch Channel, st *Store) (*Server, error) {
 	mux.HandleFunc("GET /feed-video.xml", s.handleFeed(KindVideo))
 	mux.HandleFunc("GET /audio/{number}", s.handleMedia(KindAudio))
 	mux.HandleFunc("GET /video/{number}", s.handleMedia(KindVideo))
+	// Именованные URL: тот же носитель, что и по номеру, но с именем файла в
+	// пути. Имя сегмента декоративное — поиск идёт по номеру, поэтому старые
+	// ссылки после смены заголовка продолжают работать.
+	mux.HandleFunc("GET /audio/{number}/{name}", s.handleMedia(KindAudio))
+	mux.HandleFunc("GET /video/{number}/{name}", s.handleMedia(KindVideo))
 	mux.HandleFunc("POST /track/play", s.handlePlay)
 	mux.HandleFunc("GET /api/episodes", s.handleAPI)
 	mux.HandleFunc("POST /admin/rescan", s.handleRescan)
@@ -248,7 +253,8 @@ type apiDownloads struct {
 type apiEpisode struct {
 	Number      int64        `json:"number"`
 	Title       string       `json:"title"`
-	Description string       `json:"description"`
+	Description string       `json:"description"` // markdown-исходник
+	YouTube     string       `json:"youtube"`     // пустая строка = ссылки нет
 	PublishedAt string       `json:"published_at"`
 	Media       []apiMedia   `json:"media"`
 	Downloads   apiDownloads `json:"downloads"`
@@ -267,7 +273,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		for _, f := range v.Files {
 			media = append(media, apiMedia{
 				Kind:     f.Kind,
-				URL:      s.cfg.BaseURL + "/" + f.Kind + "/" + strconv.FormatInt(v.Number, 10),
+				URL:      MediaURL(s.cfg.BaseURL, f.Kind, v.Number, v.Title, f),
 				Size:     f.Size,
 				Duration: EffectiveDuration(f),
 			})
@@ -276,6 +282,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			Number:      v.Number,
 			Title:       v.Title,
 			Description: v.Description,
+			YouTube:     v.YouTube,
 			PublishedAt: v.PublishedAt.Format("2006-01-02"),
 			Media:       media,
 			Downloads: apiDownloads{
@@ -318,7 +325,8 @@ type mediaItem struct {
 type episodeItem struct {
 	Number             int64
 	Title              string
-	Description        string
+	Description        template.HTML // отрендеренный markdown; пусто = описания нет
+	YouTube            string        // пусто = ссылки нет
 	DateLabel          string
 	HasAudio           bool
 	AudioURL           string
@@ -329,6 +337,7 @@ type episodeItem struct {
 	DownloadsAudio     int64
 	DownloadsVideo     int64
 	Plays              int64
+	Engagement         int64 // downloads.total + plays: единый счётчик на сайте
 }
 
 type pageData struct {
@@ -376,24 +385,26 @@ func buildPageData(ch Channel, baseURL string, views []EpisodeView) pageData {
 		item := episodeItem{
 			Number:         v.Number,
 			Title:          v.Title,
-			Description:    v.Description,
+			Description:    RenderDescription(v.Description),
+			YouTube:        v.YouTube,
 			DateLabel:      russianDate(v.PublishedAt),
 			Downloads:      v.Downloads.Total,
 			DownloadsAudio: v.Downloads.Audio,
 			DownloadsVideo: v.Downloads.Video,
 			Plays:          v.Plays,
+			Engagement:     v.Downloads.Total + v.Plays,
 		}
 		for _, f := range v.Files {
 			item.Media = append(item.Media, mediaItem{
 				Kind:      f.Kind,
 				Label:     mediaLabels[f.Kind],
-				URL:       baseURL + "/" + f.Kind + "/" + strconv.FormatInt(v.Number, 10),
+				URL:       MediaURL(baseURL, f.Kind, v.Number, v.Title, f),
 				Size:      f.Size,
 				SizeLabel: humanSize(f.Size),
 			})
 			if f.Kind == KindAudio {
 				item.HasAudio = true
-				item.AudioURL = baseURL + "/audio/" + strconv.FormatInt(v.Number, 10)
+				item.AudioURL = MediaURL(baseURL, KindAudio, v.Number, v.Title, f)
 				item.AudioDurationSecs = EffectiveDuration(f)
 				item.AudioDurationLabel = humanDuration(item.AudioDurationSecs)
 				if data.LatestNumber == 0 {
