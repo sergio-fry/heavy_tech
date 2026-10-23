@@ -37,7 +37,6 @@ type episodeItem struct {
 	GuestsLabel        string        // гости через запятую
 	Description        template.HTML // отрендеренный markdown; пусто = описания нет
 	Summary            string        // короткий текст для списков
-	SearchText         string        // для клиентского поиска, в нижнем регистре
 	YouTube            string        // пусто = ссылки нет
 	DateLabel          string
 	DateISO            string
@@ -82,7 +81,6 @@ type pageData struct {
 
 	Episodes  []episodeItem
 	StartHere []episodeItem
-	Years     []int
 	Total     int
 
 	Episode *episodeItem
@@ -136,7 +134,6 @@ func newEpisodeItem(v EpisodeView, baseURL string) episodeItem {
 		Engagement:     v.Downloads.Total + v.Plays + v.YouTubeViews,
 		PageURL:        baseURL + "/episodes/" + strconv.FormatInt(v.Number, 10),
 	}
-	search := []string{strconv.FormatInt(v.Number, 10), v.Title, plainText(v.Description), item.GuestsLabel}
 	for _, f := range v.Files {
 		item.Media = append(item.Media, mediaItem{
 			Kind:      f.Kind,
@@ -155,7 +152,6 @@ func newEpisodeItem(v EpisodeView, baseURL string) episodeItem {
 			item.HasVideo = true
 		}
 	}
-	item.SearchText = strings.ToLower(strings.Join(search, " "))
 	for _, ch := range v.Chapters {
 		percent := 0.0
 		if item.AudioDurationSecs > 0 {
@@ -242,15 +238,8 @@ func buildArchiveData(ch Channel, views []EpisodeView, baseURL string) pageData 
 	data := basePage(ch, baseURL, "archive", "/episodes")
 	data.Title = "Все выпуски — " + ch.Title
 	data.MetaDescription = "Все выпуски подкаста " + ch.Title + ": " + strconv.Itoa(len(views)) + " записей."
-	seenYears := map[int]bool{}
 	for _, v := range views {
-		item := newEpisodeItem(v, baseURL)
-		data.Episodes = append(data.Episodes, item)
-		year := v.PublishedAt.Year()
-		if !seenYears[year] {
-			seenYears[year] = true
-			data.Years = append(data.Years, year)
-		}
+		data.Episodes = append(data.Episodes, newEpisodeItem(v, baseURL))
 	}
 	data.Total = len(views)
 	return data

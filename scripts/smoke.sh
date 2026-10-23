@@ -85,8 +85,11 @@ grep -q 'js-copy-rss' <<<"$HOME_HTML" || fail "на лендинге нет ко
 echo "==> /episodes (архив)"
 ARCH_HTML=$(curl -sf "$BASE/episodes") || fail "GET /episodes"
 grep -q 'href="'"$BASE"'/episodes/1"' <<<"$ARCH_HTML" || fail "в архиве нет ссылки на выпуск 1"
-grep -q 'data-year="2026"' <<<"$ARCH_HTML" || fail "в архиве нет данных для фильтра по году"
-grep -q 'id="q"' <<<"$ARCH_HTML" || fail "в архиве нет поиска"
+grep -q 'row-link' <<<"$ARCH_HTML" || fail "в архиве нет растянутой ссылки строки"
+grep -q 'row-btn js-play" data-episode="1"' <<<"$ARCH_HTML" || fail "в архиве нет кнопки «слушать» у выпуска 1"
+grep -q 'class="row-btn row-dl" href="' <<<"$ARCH_HTML" || fail "в архиве нет ссылки «скачать»"
+grep -q '&#9719;' <<<"$ARCH_HTML" || fail "в архиве нет глифа часов у длительности"
+grep -vq 'id="q"\|<select' <<<"$ARCH_HTML" || fail "в архиве остался поиск/фильтры"
 
 echo "==> /episodes/1 (страница выпуска)"
 EP_HTML=$(curl -sf "$BASE/episodes/1") || fail "GET /episodes/1"

@@ -598,6 +598,10 @@ video:
 
 func TestArchivePage(t *testing.T) {
 	env := newTestEnv(t)
+	// метрики для счётчика выпуска 1: 2 скачивания (разные UA — дедуп по хешу) + 1 прослушивание
+	env.do(t, "GET", "/audio/1", "PodcastApp/1.0", nil, nil)
+	env.do(t, "GET", "/audio/1", "PodcastApp/2.0", nil, nil)
+	env.do(t, "POST", "/track/play", "Mozilla/5.0", strings.NewReader(`{"episode":1}`), nil)
 	rec := env.do(t, "GET", "/episodes", "Mozilla/5.0", nil, nil)
 	if rec.Code != 200 {
 		t.Fatalf("код %d", rec.Code)
@@ -609,14 +613,38 @@ func TestArchivePage(t *testing.T) {
 		"Vtoroy",
 		"Tolko video",
 		`href="` + testBaseURL + `/episodes/1"`,
-		`data-year="2026"`,
-		`data-video="1"`,
-		`data-guests="0"`,
-		`id="q"`,
+		`class="row-link"`,
+		`aria-label="Прослушиваний и просмотров: 3"`, // 2 скачивания + 1 прослушивание
+		`href="` + testBaseURL + `/episodes/3"`, // выпуск без аудио — переход на страницу есть
+		`data-episode="1"`,
+		`data-src="` + testBaseURL + `/audio/1/`,
+		`data-title="Первый выпуск"`,
+		`aria-label="Слушать: Первый выпуск"`,
+		`class="row-btn row-dl" href="` + testBaseURL + `/audio/1/`,
+		`download aria-label="Скачать аудио: Первый выпуск"`,
+		"&#9719;", // глиф часов у длительности
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("в архиве нет %q", want)
 		}
+	}
+	// шапка без поиска и фильтров
+	for _, banned := range []string{"id=\"q\"", "<select", "id=\"no-results\"", "data-search", "data-year", "data-guests", "data-video", "Все годы"} {
+		if strings.Contains(html, banned) {
+			t.Fatalf("в архиве остался след фильтров: %q", banned)
+		}
+	}
+	// быстрые действия только у выпусков с аудио: эпизоды 1 и 2, у 3 — только видео
+	if got := strings.Count(html, "row-btn js-play"); got != 2 {
+		t.Fatalf("кнопок «слушать» %d, хотели 2", got)
+	}
+	if got := strings.Count(html, "row-dl"); got != 2 {
+		t.Fatalf("ссылок «скачать» %d, хотели 2", got)
+	}
+	// выпуск без аудио (эпизод 3): кнопок нет — счётчик js-play остался 2, ссылка на страницу — выше в wants
+	// размер файла не показан в строке архива
+	if strings.Contains(html, "КБ") || strings.Contains(html, "МБ") {
+		t.Fatal("в строке архива не должно быть размера файла")
 	}
 	// новые сверху
 	if strings.Index(html, "Tolko video") > strings.Index(html, "Vtoroy") ||

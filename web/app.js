@@ -169,6 +169,7 @@
   document.addEventListener('click', function (event) {
     var play = event.target.closest('.js-play');
     if (play) {
+      event.preventDefault(); // в архиве кнопка лежит в строке со ссылкой на страницу выпуска
       if (play.getAttribute('data-src')) {
         var ep = play.getAttribute('data-episode');
         if (String(current) === String(ep) && !audio.paused) { audio.pause(); return; }
@@ -312,38 +313,4 @@
   applySpeed();
   window.addEventListener('scroll', updateMini, { passive: true });
   window.addEventListener('resize', updateMini);
-
-  // --- поиск и фильтры архива ---
-  var query = document.getElementById('q');
-  if (query) {
-    var year = document.getElementById('f-year');
-    var guests = document.getElementById('f-guests');
-    var video = document.getElementById('f-video');
-    var noResults = document.getElementById('no-results');
-    var rows = Array.prototype.slice.call(document.querySelectorAll('.row'));
-
-    function applyFilters() {
-      var q = (query.value || '').trim().toLowerCase();
-      var y = year ? year.value : '';
-      var g = guests ? guests.value : '';
-      var v = video ? video.value : '';
-      var visible = 0;
-      rows.forEach(function (row) {
-        var ok = true;
-        if (q && (row.getAttribute('data-search') || '').indexOf(q) === -1) { ok = false; }
-        if (ok && y && row.getAttribute('data-year') !== y) { ok = false; }
-        if (ok && g && row.getAttribute('data-guests') !== g) { ok = false; }
-        if (ok && v && row.getAttribute('data-video') !== v) { ok = false; }
-        row.hidden = !ok;
-        if (ok) { visible++; }
-      });
-      if (noResults) { noResults.hidden = visible !== 0; }
-    }
-
-    [query, year, guests, video].forEach(function (el) {
-      if (!el) { return; }
-      el.addEventListener('input', applyFilters);
-      el.addEventListener('change', applyFilters);
-    });
-  }
 })();

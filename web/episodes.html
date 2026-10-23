@@ -2,37 +2,24 @@
 <section class="page-head">
   <h1>Все выпуски</h1>
   <p class="muted">{{.Total}} выпусков</p>
-  <div class="filters">
-    <input id="q" class="search" type="search" placeholder="Номер, тема, гость" aria-label="Поиск по выпускам">
-    <select id="f-year" aria-label="Год">
-      <option value="">Все годы</option>
-      {{range .Years}}<option value="{{.}}">{{.}}</option>{{end}}
-    </select>
-    <select id="f-guests" aria-label="Гости">
-      <option value="">Все</option>
-      <option value="1">С гостем</option>
-      <option value="0">Без гостя</option>
-    </select>
-    <select id="f-video" aria-label="Видео">
-      <option value="">Все</option>
-      <option value="1">С видео</option>
-      <option value="0">Без видео</option>
-    </select>
-  </div>
 </section>
-
-<p class="empty" id="no-results" hidden>Ничего не найдено</p>
 
 <div class="list">
   {{range .Episodes}}
-  <a class="row" href="{{.PageURL}}" data-year="{{.Year}}" data-guests="{{if .Guests}}1{{else}}0{{end}}" data-video="{{if .HasVideo}}1{{else}}0{{end}}" data-search="{{.SearchText}}">
-    <span class="row-num" aria-hidden="true">{{.Number}}</span>
-    <span class="row-body">
-      <span class="row-title">{{.Title}}</span>
-      <span class="row-meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}{{if .Host}} · {{.Host}}{{end}}{{if .Guests}} · {{.GuestsLabel}}{{end}}</span>
+  <div class="row">
+    <a class="row-link" href="{{.PageURL}}">
+      <span class="row-num" aria-hidden="true">{{.Number}}</span>
+      <span class="row-body">
+        <span class="row-title">{{.Title}}</span>
+        <span class="row-meta">{{.DateLabel}}{{if .AudioDurationLabel}} · <span class="row-ico" aria-hidden="true">&#9719;</span> {{.AudioDurationLabel}}{{end}}{{if .Host}} · {{.Host}}{{end}}{{if .Guests}} · {{.GuestsLabel}}{{end}}</span>
+      </span>
+    </a>
+    <span class="row-actions">
+      {{if .Engagement}}<span class="row-count" aria-label="Прослушиваний и просмотров: {{.Engagement}}"><span class="row-ico" aria-hidden="true">&#9654;</span> <span class="row-count-num">{{.Engagement}}</span></span>{{end}}
+      {{if .HasAudio}}<button class="row-btn js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}" aria-label="Слушать: {{.Title}}">&#9654;</button>
+      <a class="row-btn row-dl" href="{{.AudioURL}}" download aria-label="Скачать аудио: {{.Title}}">&#10515;</a>{{end}}
     </span>
-    {{if .Engagement}}<span class="row-count" aria-label="Прослушиваний и просмотров: {{.Engagement}}">{{.Engagement}}</span>{{end}}
-  </a>
+  </div>
   {{end}}
 </div>
 {{end}}
