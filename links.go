@@ -13,3 +13,9 @@ func MediaURL(baseURL, kind string, number int64, title string, file EpisodeFile
 func MediaGUID(baseURL, kind string, number int64) string {
 	return baseURL + "/" + kind + "/" + strconv.FormatInt(number, 10)
 }
+
+// CoverURL — канонический абсолютный URL обложки выпуска с именем файла. Имя
+// декоративно: отдача по /cover/{номер}[/любое-имя] одна и та же (design D4).
+func CoverURL(baseURL string, number int64, title, coverPath string) string {
+	return baseURL + "/cover/" + strconv.FormatInt(number, 10) + "/" + CoverFilename(number, title, coverPath)
+}

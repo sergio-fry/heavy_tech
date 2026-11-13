@@ -43,6 +43,8 @@ type episodeItem struct {
 	Year               int
 	HasAudio           bool
 	HasVideo           bool
+	HasCover           bool   // обложка выпуска задана
+	CoverURL           string // абсолютный URL обложки; пусто = нет
 	AudioURL           string
 	AudioDurationSecs  int64
 	AudioDurationLabel string
@@ -126,6 +128,8 @@ func newEpisodeItem(v EpisodeView, baseURL string) episodeItem {
 		DateLabel:      russianDate(v.PublishedAt),
 		DateISO:        v.PublishedAt.Format("2006-01-02"),
 		Year:           v.PublishedAt.Year(),
+		HasCover:       v.Cover != "",
+		CoverURL:       coverURLOf(v, baseURL),
 		Downloads:      v.Downloads.Total,
 		DownloadsAudio: v.Downloads.Audio,
 		DownloadsVideo: v.Downloads.Video,
@@ -262,6 +266,12 @@ func buildEpisodePageData(ch Channel, views []EpisodeView, number int64, baseURL
 	data.Title = item.Title + " — " + ch.Title
 	data.OGType = "article"
 	data.OGTitle = item.Title
+	// Обложка выпуска приоритетнее канальной в og:image и data-cover
+	// (body): соцпревью и Media Session получают artwork выпуска (design D6).
+	if item.HasCover {
+		data.HasImage = true
+		data.Image = item.CoverURL
+	}
 	data.MetaDescription = truncateRunes(plainText(views[index].Description), 160)
 	if data.MetaDescription == "" {
 		data.MetaDescription = truncateRunes(plainText(ch.Description), 160)

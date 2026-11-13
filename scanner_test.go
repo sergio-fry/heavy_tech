@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -647,5 +648,79 @@ audio:
 				t.Fatalf("ссылка %q должна быть ошибкой синхронизации", link)
 			}
 		})
+	}
+}
+
+// TestCoverMeta — обложка попадает в индекс; поле опционально; нарушение
+// конвенций (тип, расширение, файл) — ошибка синхронизации.
+func TestCoverMeta(t *testing.T) {
+	dir := writePodcastDir(t)
+	writeEpisode(t, dir, "7", `title: С обложкой
+published_at: 2026-11-01
+cover: OBLOZHKA.JPG
+audio:
+  file: a.m4a
+`, map[string]string{"a.m4a": "a", "OBLOZHKA.JPG": "jpeg"})
+	eps := mustScan(t, dir)
+	if len(eps) != 1 || eps[0].Cover == "" {
+		t.Fatalf("обложка не попала в эпизод: %+v", eps)
+	}
+	if want := filepath.Join(dir, "7", "OBLOZHKA.JPG"); eps[0].Cover != want {
+		t.Fatalf("cover = %q, хотели %q", eps[0].Cover, want)
+	}
+
+	// поле отсутствует — обложки нет, выпуск публикуется
+	writeEpisode(t, dir, "6", metaAudio("Без обложки", "2026-10-01", "b.m4a"), map[string]string{"b.m4a": "b"})
+	eps = mustScan(t, dir)
+	for _, ep := range eps {
+		if ep.Number == 6 && ep.Cover != "" {
+			t.Fatalf("эпизод 6: неожиданная обложка %q", ep.Cover)
+		}
+	}
+
+	// некорректный тип: число вместо строки
+	writeEpisode(t, dir, "8", "title: Num\npublished_at: 2026-11-02\ncover: 42\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "cover: должна быть строкой") {
+		t.Fatalf("ожидали ошибку типа cover, получили: %v", err)
+	}
+
+	// неподдерживаемое расширение (проверка расширения раньше существования файла)
+	writeEpisode(t, dir, "8", "title: Tiff\npublished_at: 2026-11-02\ncover: oblozhka.tiff\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "неподдерживаемое расширение") {
+		t.Fatalf("ожидали ошибку расширения cover, получили: %v", err)
+	}
+
+	// вложенный путь вместо имени файла
+	writeEpisode(t, dir, "8", "title: Nested\npublished_at: 2026-11-02\ncover: sub/oblozhka.png\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "именем файла в папке эпизода") {
+		t.Fatalf("ожидали ошибку пути cover, получили: %v", err)
+	}
+
+	// файл не существует
+	writeEpisode(t, dir, "8", "title: Net\npublished_at: 2026-11-02\ncover: net.jpg\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "не существует") {
+		t.Fatalf("ожидали ошибку отсутствия файла cover, получили: %v", err)
+	}
+
+	// путь указывает на папку, а не файл
+	sub := filepath.Join(dir, "8", "papka.png")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeEpisode(t, dir, "8", "title: Dir\npublished_at: 2026-11-02\ncover: papka.png\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "не обычный файл") {
+		t.Fatalf("ожидали ошибку «не обычный файл», получили: %v", err)
+	}
+	_ = os.RemoveAll(sub)
+
+	// обложка не считается лишним файлом; посторонний файл по-прежнему ошибка
+	writeEpisode(t, dir, "8", "title: Ok\npublished_at: 2026-11-02\ncover: oblozhka.png\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a", "oblozhka.png": "png"})
+	eps = mustScan(t, dir)
+	if len(eps) != 3 {
+		t.Fatalf("хотели 3 эпизода, получили %d", len(eps))
+	}
+	writeEpisode(t, dir, "8", "title: Extra\npublished_at: 2026-11-02\ncover: oblozhka.png\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a", "oblozhka.png": "png", "lishnij.mp3": "x"})
+	if _, err := ScanFolder(dir); err == nil || !strings.Contains(err.Error(), "не упомянут") {
+		t.Fatalf("ожидали ошибку «не упомянут», получили: %v", err)
 	}
 }

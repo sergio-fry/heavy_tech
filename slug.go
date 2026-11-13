@@ -65,6 +65,18 @@ func truncateSlug(s string, max int) string {
 // заголовка и реальное расширение носителя. Пустой slug даёт имя из номера.
 func MediaFilename(number int64, title string, f EpisodeFile) string {
 	ext := strings.ToLower(filepath.Ext(f.FilePath))
+	return numberedFilename(number, title, ext)
+}
+
+// CoverFilename — публичное имя файла обложки: тот же формат, что у носителей.
+// Расширение берётся из имени файла обложки.
+func CoverFilename(number int64, title, coverPath string) string {
+	ext := strings.ToLower(filepath.Ext(coverPath))
+	return numberedFilename(number, title, ext)
+}
+
+// numberedFilename — общий формат публичного имени: NNN-slug.ext или NNN.ext.
+func numberedFilename(number int64, title, ext string) string {
 	if slug := Slugify(title); slug != "" {
 		return fmt.Sprintf("%03d-%s%s", number, slug, ext)
 	}

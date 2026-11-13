@@ -105,6 +105,10 @@ h1, h2, h3 { letter-spacing: -.02em; }
   padding: 1.2rem 1.3rem;
 }
 .card-head { display: flex; align-items: center; gap: .65rem; margin-bottom: .35rem; }
+.card-thumb {
+  width: 2rem; height: 2rem; flex: none; border-radius: 10px; object-fit: cover;
+  border: 1px solid var(--border); background: var(--tile);
+}
 .card .num {
   min-width: 2rem; height: 2rem; padding: 0 .45rem; border-radius: 10px;
   background: var(--tile); color: var(--tile-text);
@@ -141,6 +145,10 @@ h1, h2, h3 { letter-spacing: -.02em; }
   flex: none; min-width: 2.1rem; color: var(--muted);
   font-variant-numeric: tabular-nums; font-weight: 700;
 }
+.row-thumb {
+  width: 48px; height: 48px; flex: none; border-radius: 10px; object-fit: cover;
+  border: 1px solid var(--border); background: var(--tile);
+}
 .row-body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .row-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-meta { color: var(--muted); font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -171,6 +179,12 @@ h1, h2, h3 { letter-spacing: -.02em; }
 .empty .big { font-size: 1.25rem; font-weight: 700; color: var(--text); margin-bottom: .4rem; }
 
 .ep-head { padding: 1rem 0 1.25rem; }
+.ep-head.with-cover { display: flex; align-items: flex-start; gap: 1.25rem; }
+.ep-head-text { flex: 1; min-width: 0; }
+.ep-cover {
+  width: 160px; height: 160px; flex: none; border-radius: 16px; object-fit: cover;
+  border: 1px solid var(--border); background: var(--tile);
+}
 .kicker { margin: 0 0 .2rem; color: var(--accent); font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .ep-head h1 { margin: 0 0 .4rem; font-size: clamp(1.5rem, 3.5vw, 2.1rem); line-height: 1.18; }
 .ep-head .meta { color: var(--muted); font-size: .88rem; margin-bottom: .35rem; }
@@ -264,4 +278,6 @@ footer {
   .player { gap: .55rem; }
   .player .time { order: 5; }
   .marks { left: 6px; right: 6px; }
+  .ep-cover { width: 96px; height: 96px; border-radius: 12px; }
+  .row-thumb { width: 40px; height: 40px; }
 }

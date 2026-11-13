@@ -101,6 +101,8 @@ func NewServer(cfg Config, ch Channel, st *Store) (*Server, error) {
 	// ссылки после смены заголовка продолжают работать.
 	mux.HandleFunc("GET /audio/{number}/{name}", s.handleMedia(KindAudio))
 	mux.HandleFunc("GET /video/{number}/{name}", s.handleMedia(KindVideo))
+	mux.HandleFunc("GET /cover/{number}", s.handleCover)
+	mux.HandleFunc("GET /cover/{number}/{name}", s.handleCover)
 	mux.HandleFunc("POST /track/play", s.handlePlay)
 	mux.HandleFunc("GET /api/episodes", s.handleAPI)
 	mux.HandleFunc("POST /admin/rescan", s.handleRescan)
@@ -295,12 +297,64 @@ type apiEpisode struct {
 	Host         string       `json:"host"`        // пустая строка = не указан
 	Guests       []string     `json:"guests"`      // пустой список = не указаны
 	YouTube      string       `json:"youtube"`     // пустая строка = ссылки нет
+	Cover        string       `json:"cover"`       // абсолютный URL обложки; пустая строка = нет
 	PublishedAt  string       `json:"published_at"`
 	Media        []apiMedia   `json:"media"`
 	Downloads    apiDownloads `json:"downloads"`
 	Plays        int64        `json:"plays"`
 	YouTubeViews int64        `json:"youtube_views"`
 	Chapters     []apiChapter `json:"chapters"`
+}
+
+// coverURLOf — канонический абсолютный URL обложки выпуска; пусто, когда её нет.
+func coverURLOf(v EpisodeView, baseURL string) string {
+	if v.Cover == "" {
+		return ""
+	}
+	return CoverURL(baseURL, v.Number, v.Title, v.Cover)
+}
+
+// handleCover отдаёт файл обложки выпуска по стабильному адресу /cover/{номер}
+// (имя сегмента декоративное). Обложка — оформление, а не носитель: счётчик
+// скачиваний не трогается; Cache-Control и Last-Modified — как у статики (design D4).
+func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
+	number, ok := parseEpisodeNumber(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	ep, err := s.store.EpisodeByNumber(number)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	if ep.Cover == "" {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(ep.Cover)
+	if err != nil {
+		log.Printf("cover %d: файл недоступен: %v", ep.Number, err)
+		http.Error(w, "файл обложки недоступен", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "файл обложки недоступен", http.StatusInternalServerError)
+		return
+	}
+	mime, known := imageByExt[strings.ToLower(filepath.Ext(ep.Cover))]
+	if !known {
+		mime = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	http.ServeContent(w, r, filepath.Base(ep.Cover), info.ModTime(), f)
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
@@ -335,6 +389,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			Host:        v.Host,
 			Guests:      guests,
 			YouTube:     v.YouTube,
+			Cover:       coverURLOf(v, s.cfg.BaseURL),
 			PublishedAt: v.PublishedAt.Format("2006-01-02"),
 			Media:       media,
 			Downloads: apiDownloads{

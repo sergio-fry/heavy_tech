@@ -1,11 +1,14 @@
 {{define "content"}}
 <article class="episode">
-  <header class="ep-head">
-    <p class="kicker">Выпуск №{{.Episode.Number}}</p>
-    <h1>{{.Episode.Title}}</h1>
-    <div class="meta">{{.Episode.DateLabel}}{{if .Episode.AudioDurationLabel}} · {{.Episode.AudioDurationLabel}}{{end}}{{if .Episode.Engagement}} · Прослушиваний и просмотров: {{.Episode.Engagement}}{{end}}</div>
-    {{if .Episode.Host}}<div class="people">Ведущий: {{.Episode.Host}}</div>{{end}}
-    {{if .Episode.Guests}}<div class="people">Гости: {{.Episode.GuestsLabel}}</div>{{end}}
+  <header class="ep-head{{if .Episode.HasCover}} with-cover{{end}}">
+    <div class="ep-head-text">
+      <p class="kicker">Выпуск №{{.Episode.Number}}</p>
+      <h1>{{.Episode.Title}}</h1>
+      <div class="meta">{{.Episode.DateLabel}}{{if .Episode.AudioDurationLabel}} · {{.Episode.AudioDurationLabel}}{{end}}{{if .Episode.Engagement}} · Прослушиваний и просмотров: {{.Episode.Engagement}}{{end}}</div>
+      {{if .Episode.Host}}<div class="people">Ведущий: {{.Episode.Host}}</div>{{end}}
+      {{if .Episode.Guests}}<div class="people">Гости: {{.Episode.GuestsLabel}}</div>{{end}}
+    </div>
+    {{if .Episode.HasCover}}<img class="ep-cover" src="{{.Episode.CoverURL}}" alt="Обложка выпуска «{{.Episode.Title}}»" loading="lazy" width="160" height="160">{{end}}
   </header>
 
   {{if .Episode.HasAudio}}

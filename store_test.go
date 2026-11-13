@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -224,5 +225,58 @@ func TestStoreSyncCRUD(t *testing.T) {
 	_ = st.db.QueryRow(`SELECT COUNT(*) FROM play_events`).Scan(&plays)
 	if files != 0 || events != 0 || plays != 0 {
 		t.Fatalf("после удаления остались строки: files=%d events=%d plays=%d", files, events, plays)
+	}
+}
+
+// TestCoverRoundTrip — обложка проходит сканер → индекс → чтение; добавление,
+// идемпотентность и удаление обложки подхватываются ресканом.
+func TestCoverRoundTrip(t *testing.T) {
+	dir := writePodcastDir(t)
+	st := newTestStore(t)
+	writeEpisode(t, dir, "1", metaAudio("Первый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "a"})
+	if _, _, _, err := SyncPodcastDir(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := st.EpisodeByNumber(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Cover != "" {
+		t.Fatalf("без cover в meta обложка = %q, хотели пусто", ep.Cover)
+	}
+
+	// добавили обложку → рескан помечает эпизод обновлённым
+	writeEpisode(t, dir, "1", "title: Первый\npublished_at: 2026-10-01\ncover: oblozhka.png\naudio:\n  file: a.m4a\n", map[string]string{"a.m4a": "a", "oblozhka.png": "png"})
+	added, updated, removed, err := SyncPodcastDir(dir, st)
+	if err != nil || added != 0 || updated != 1 || removed != 0 {
+		t.Fatalf("sync с обложкой: %d/%d/%d, err=%v", added, updated, removed, err)
+	}
+	ep, err = st.EpisodeByNumber(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "1", "oblozhka.png"); ep.Cover != want {
+		t.Fatalf("cover = %q, хотели %q", ep.Cover, want)
+	}
+
+	// идемпотентность
+	if added, updated, removed, err := SyncPodcastDir(dir, st); err != nil || added+updated+removed != 0 {
+		t.Fatalf("повторный sync: %d/%d/%d, err=%v", added, updated, removed, err)
+	}
+
+	// удалили обложку → рескан чистит колонку
+	if err := os.Remove(filepath.Join(dir, "1", "oblozhka.png")); err != nil {
+		t.Fatal(err)
+	}
+	writeEpisode(t, dir, "1", metaAudio("Первый", "2026-10-01", "a.m4a"), map[string]string{"a.m4a": "a"})
+	if added, updated, removed, err := SyncPodcastDir(dir, st); err != nil || added != 0 || updated != 1 || removed != 0 {
+		t.Fatalf("sync без обложки: %d/%d/%d, err=%v", added, updated, removed, err)
+	}
+	ep, err = st.EpisodeByNumber(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Cover != "" {
+		t.Fatalf("после удаления cover = %q, хотели пусто", ep.Cover)
 	}
 }

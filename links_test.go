@@ -20,3 +20,19 @@ func TestMediaURLAndGUID(t *testing.T) {
 		t.Fatalf("MediaURL без slug = %q", got)
 	}
 }
+
+// TestCoverURLAndFilename — канонический именованный URL обложки: номер, slug
+// заголовка и реальное расширение файла; имя декоративно, но стабильной формы.
+func TestCoverURLAndFilename(t *testing.T) {
+	want := "https://pod.example.com/cover/7/007-testovyy-vypusk.jpg"
+	if got := CoverFilename(7, "Тестовый выпуск", "/data/7/oblozhka.jpg"); got != "007-testovyy-vypusk.jpg" {
+		t.Fatalf("CoverFilename = %q", got)
+	}
+	if got := CoverURL("https://pod.example.com", 7, "Тестовый выпуск", "/data/7/oblozhka.jpg"); got != want {
+		t.Fatalf("CoverURL = %q, хотели %q", got, want)
+	}
+	// без slug и с верхним регистром расширения
+	if got := CoverFilename(7, "!!!", "/x/PIC.PNG"); got != "007.png" {
+		t.Fatalf("CoverFilename без slug = %q", got)
+	}
+}

@@ -45,6 +45,15 @@ var mediaByExt = map[string]mediaFormat{
 	".webm": {Kind: KindVideo, Mime: "video/webm"},
 }
 
+// imageByExt — допустимые форматы обложки выпуска (design D3): MIME по
+// расширению, декодирования нет — отдача потоком как у носителей.
+var imageByExt = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+}
+
 // mediaMeta — секция audio:/video: в episode.yaml. Характеристики информационные.
 type mediaMeta struct {
 	File        string `yaml:"file"`
@@ -60,18 +69,20 @@ type episodeMeta struct {
 	YouTube     string     `yaml:"youtube"`      // ссылка на видеоверсию выпуска
 	Host        string     `yaml:"host"`         // ведущий выпуска; пусто = не указан
 	Guests      []string   `yaml:"guests"`       // гости в порядке вывода
+	Cover       string     `yaml:"cover"`        // имя файла-обложки в папке эпизода; пусто = нет
 	PublishedAt string     `yaml:"published_at"` // YYYY-MM-DD
 	Audio       *mediaMeta `yaml:"audio"`
 	Video       *mediaMeta `yaml:"video"`
 }
 
-// validateParticipantTypes — строгая типизация host/guests: yaml.v3 молча приводит
-// скаляры (число, булево) к строке, а спека требует строку и список строк.
-// Пустое значение (null) равно отсутствию.
-func validateParticipantTypes(raw []byte) error {
+// validateMetaTypes — строгая типизация скалярных/списковых полей meta:
+// yaml.v3 молча приводит скаляры (число, булево) к строке, а спека требует
+// строку и список строк. Пустое значение (null) равно отсутствию.
+func validateMetaTypes(raw []byte) error {
 	var typed struct {
 		Host   yaml.Node `yaml:"host"`
 		Guests yaml.Node `yaml:"guests"`
+		Cover  yaml.Node `yaml:"cover"`
 	}
 	if err := yaml.Unmarshal(raw, &typed); err != nil {
 		return err
@@ -89,6 +100,9 @@ func validateParticipantTypes(raw []byte) error {
 				return fmt.Errorf("guests: элементы должны быть строками (получен %s)", item.Tag)
 			}
 		}
+	}
+	if n := typed.Cover; !absent(n) && (n.Kind != yaml.ScalarNode || n.Tag != "!!str") {
+		return fmt.Errorf("cover: должна быть строкой — именем файла в папке эпизода")
 	}
 	return nil
 }
@@ -172,7 +186,7 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 	if err := yaml.Unmarshal(raw, &meta); err != nil {
 		return Episode{}, fmt.Errorf("не удалось разобрать %s: %w", metaPath, err)
 	}
-	if err := validateParticipantTypes(raw); err != nil {
+	if err := validateMetaTypes(raw); err != nil {
 		return Episode{}, fmt.Errorf("%s: %w", metaPath, err)
 	}
 	if strings.TrimSpace(meta.Title) == "" {
@@ -199,6 +213,10 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 	if err != nil {
 		return Episode{}, err
 	}
+	cover, err := resolveCover(dir, name, meta.Cover, referenced)
+	if err != nil {
+		return Episode{}, err
+	}
 
 	ep := Episode{
 		Number:      number,
@@ -207,6 +225,7 @@ func scanEpisodeFolder(root, name string, number int64) (Episode, error) {
 		YouTube:     youtube,
 		Host:        host,
 		Guests:      guests,
+		Cover:       cover,
 		PublishedAt: publishedAt,
 	}
 	for _, section := range []struct {
@@ -259,6 +278,36 @@ func resolveDescription(dir, folder, metaDescription string, referenced map[stri
 	default:
 		return "", fmt.Errorf("папка %q: не прочитать %s: %w", folder, descriptionFileName, err)
 	}
+}
+
+// resolveCover проверяет файл обложки из поля cover: он существует, лежит прямо
+// в папке эпизода и имеет поддерживаемое расширение (design D3). Обложка
+// помечается упомянутой, чтобы не считаться лишним файлом. Пусто = обложки нет.
+func resolveCover(dir, folder, metaCover string, referenced map[string]bool) (string, error) {
+	file := strings.TrimSpace(metaCover)
+	if file == "" {
+		return "", nil
+	}
+	if file != filepath.Base(file) || strings.ContainsAny(file, `/\`) {
+		return "", fmt.Errorf("папка %q: cover должен быть именем файла в папке эпизода, получено %q", folder, metaCover)
+	}
+	ext := strings.ToLower(filepath.Ext(file))
+	if _, known := imageByExt[ext]; !known {
+		return "", fmt.Errorf("папка %q: cover %q: неподдерживаемое расширение %q (допустимы .jpg, .jpeg, .png, .webp)", folder, file, ext)
+	}
+	path := filepath.Join(dir, file)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("папка %q: cover %q не существует", folder, file)
+		}
+		return "", fmt.Errorf("папка %q: cover %q: %w", folder, file, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("папка %q: cover %q — не обычный файл", folder, file)
+	}
+	referenced[file] = true
+	return path, nil
 }
 
 // validateYouTube проверяет форму ссылки на видеоверсию выпуска: абсолютный
