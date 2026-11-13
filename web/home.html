@@ -7,7 +7,7 @@
     {{if .Tagline}}<p class="tagline">{{.Tagline}}</p>{{end}}
     <p class="desc">{{.Description}}</p>
     <div class="actions">
-      {{if .Latest}}<button class="btn btn-primary js-play" data-episode="{{.Latest.Number}}" data-src="{{.Latest.AudioURL}}" data-title="{{.Latest.Title}}" data-duration="{{.Latest.AudioDurationSecs}}"><span aria-hidden="true">&#9654;</span> Слушать последний выпуск</button>{{end}}
+      {{if .Latest}}<button class="btn btn-primary js-play" data-episode="{{.Latest.Number}}" data-src="{{.Latest.AudioURL}}" data-title="{{.Latest.Title}}" data-duration="{{.Latest.AudioDurationSecs}}"><span class="js-ico" aria-hidden="true">&#9654;</span> Слушать последний выпуск</button>{{end}}
       {{range .Subscribe}}<a class="btn" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{end}}
       <button class="btn js-copy-rss" data-url="{{.FeedURL}}">Скопировать RSS</button>
     </div>

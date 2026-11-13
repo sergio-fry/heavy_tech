@@ -59,9 +59,66 @@
   function setIcons(playing) {
     playButtons().forEach(function (btn) {
       var isCurrent = btn.id === 'mini-play' || String(btn.getAttribute('data-episode')) === String(current);
-      if (!isCurrent) { return; }
-      btn.innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
-      btn.setAttribute('aria-label', playing ? 'Пауза' : 'Слушать');
+      var glyph = (isCurrent && playing) ? '&#10074;&#10074;' : '&#9654;';
+      // меняем только глиф внутри .js-ico, чтобы не трогать текстовые подписи кнопок
+      var ico = btn.querySelector('.js-ico');
+      if (ico) { ico.innerHTML = glyph; } else { btn.innerHTML = glyph; }
+      var title = btn.getAttribute('data-title');
+      btn.setAttribute('aria-label', (isCurrent && playing)
+        ? 'Пауза' + (title ? ': ' + title : '')
+        : (title ? 'Слушать: ' + title : 'Слушать'));
+      btn.classList.toggle('is-playing', !!(isCurrent && playing));
+    });
+  }
+
+  // --- прогресс прослушивания ---
+  function savedPos(ep) {
+    var v = parseFloat(read('ht:pos:' + ep) || '0');
+    return v > 5 ? v : 0;
+  }
+
+  function setProgress(ep, frac) {
+    if (!isFinite(frac) || frac < 0) { frac = 0; }
+    if (frac > 1) { frac = 1; }
+    document.querySelectorAll('.js-progress[data-episode="' + ep + '"]').forEach(function (el) {
+      if (frac > 0) {
+        el.hidden = false;
+        var fill = el.querySelector('.progress-fill');
+        if (fill) { fill.style.width = Math.round(frac * 100) + '%'; }
+      } else {
+        el.hidden = true;
+      }
+    });
+  }
+
+  // восстановить полосу из сохранённой позиции (localStorage)
+  function refreshProgress(ep) {
+    var el = document.querySelector('.js-progress[data-episode="' + ep + '"]');
+    var dur = el ? (parseFloat(el.getAttribute('data-duration')) || 0) : 0;
+    var pos = savedPos(ep);
+    setProgress(ep, (pos > 0 && dur > 0 && pos < dur - 5) ? pos / dur : 0);
+  }
+
+  // на странице выпуска до нажатия «слушать» показать сохранённую позицию
+  function showSavedTimeUI() {
+    var inline = document.querySelector('#inline-player .js-play');
+    if (!inline) { return; }
+    var dur = parseFloat(inline.getAttribute('data-duration')) || 0;
+    var pos = savedPos(inline.getAttribute('data-episode'));
+    if (!pos || !dur || pos >= dur - 5) { return; }
+    document.querySelectorAll('.js-seek').forEach(function (el) {
+      el.max = String(Math.floor(dur));
+      el.value = String(Math.floor(pos));
+      el.setAttribute('aria-valuetext', fmt(pos) + ' из ' + fmt(dur));
+    });
+    document.querySelectorAll('.js-time').forEach(function (el) {
+      el.textContent = fmt(pos) + ' / ' + fmt(dur);
+    });
+  }
+
+  function initProgress() {
+    document.querySelectorAll('.js-progress').forEach(function (el) {
+      refreshProgress(el.getAttribute('data-episode'));
     });
   }
 
@@ -147,6 +204,7 @@
     var ep = btn.getAttribute('data-episode');
     var src = btn.getAttribute('data-src');
     if (!ep || !src) { return; }
+    var prev = current;
     var changed = String(current) !== String(ep) || audio.getAttribute('src') !== src;
     if (changed) {
       current = ep;
@@ -161,6 +219,8 @@
       setMediaSession(btn.getAttribute('data-title') || '');
       applySpeed();
     }
+    // у прежнего выпуска полоса прогресса должна показать сохранённую позицию
+    if (changed && prev !== null && String(prev) !== String(ep)) { refreshProgress(prev); }
     audio.play().catch(function () {});
     updateMini();
   }
@@ -229,6 +289,8 @@
       try { audio.currentTime = 0; } catch (e) { pendingSeek = 0; }
       pendingSeek = 0;
       lastSaved = 0;
+      // сбросить и полосу перемотки: до начала воспроизведения total() ещё 0 и setTime её не тронет
+      document.querySelectorAll('.js-seek').forEach(function (el) { el.value = '0'; });
       setTime();
       return;
     }
@@ -247,6 +309,7 @@
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
+      if (current !== null) { refreshProgress(current); }
       current = null;
       beaconed = null;
       if (mini) { mini.hidden = true; }
@@ -276,6 +339,7 @@
   });
   audio.addEventListener('timeupdate', function () {
     setTime();
+    if (current !== null && total() > 0) { setProgress(current, audio.currentTime / total()); }
     if (current !== null && Math.abs(audio.currentTime - lastSaved) >= 5) {
       lastSaved = audio.currentTime;
       if (audio.currentTime > 5 && total() > 0 && audio.currentTime < total() - 5) {
@@ -286,6 +350,7 @@
   audio.addEventListener('ended', function () {
     if (current !== null) { remove('ht:pos:' + current); }
     setIcons(false);
+    setProgress(current, 0);
     setTime();
   });
 
@@ -311,6 +376,8 @@
   var savedSpeed = parseFloat(read('ht:speed') || '1');
   if ([1, 1.25, 1.5, 1.75, 2].indexOf(savedSpeed) >= 0) { speed = savedSpeed; }
   applySpeed();
+  initProgress();
+  showSavedTimeUI();
   window.addEventListener('scroll', updateMini, { passive: true });
   window.addEventListener('resize', updateMini);
 })();
