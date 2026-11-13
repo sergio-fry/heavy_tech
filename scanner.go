@@ -319,12 +319,3 @@ func resolveMedia(dir, folder, kind string, meta *mediaMeta) (EpisodeFile, error
 		FileMtime:       info.ModTime().Unix(),
 	}, nil
 }
-
-// SyncPodcastDir сканирует папку и приводит индекс в соответствие с ней.
-func SyncPodcastDir(dir string, st *Store) (added, updated, removed int, err error) {
-	found, err := ScanFolder(dir)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	return st.Sync(found)
-}

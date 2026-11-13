@@ -57,6 +57,8 @@
 </body>
 </html>{{end}}
 
+{{define "participant-list"}}{{$first := true}}{{range .}}{{if not $first}}, {{end}}{{if .URL}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{$first = false}}{{end}}{{end}}
+
 {{define "card"}}
 <article class="card">
   <div class="card-head">
@@ -64,8 +66,8 @@
     <span class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}{{if .Engagement}} · Прослушиваний и просмотров: {{.Engagement}}{{end}}</span>
   </div>
   <h3><a href="{{.PageURL}}">{{.Title}}</a></h3>
-  {{if .Host}}<div class="people">Ведущий: {{.Host}}</div>{{end}}
-  {{if .Guests}}<div class="people">Гости: {{.GuestsLabel}}</div>{{end}}
+  {{if .Hosts}}<div class="people">Ведущий: {{template "participant-list" .Hosts}}</div>{{end}}
+  {{if .Guests}}<div class="people">Гости: {{template "participant-list" .Guests}}</div>{{end}}
   {{if .Summary}}<p class="summary">{{.Summary}}</p>{{end}}
   <div class="card-actions">
     {{if .HasAudio}}<button class="btn btn-primary js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}">Слушать</button>{{end}}

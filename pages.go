@@ -28,16 +28,24 @@ type chapterItem struct {
 	Percent float64 // положение на полосе, 0..99
 }
 
+// participantItem — участник в линии «Ведущий:/Гости:»: имя известного
+// участника — ссылка на его страницу, неизвестного — обычный текст.
+type participantItem struct {
+	Name string
+	URL  string // пусто = участник не описан в people/, рисуется текстом
+}
+
 // episodeItem — данные одного эпизода для HTML-страниц.
 type episodeItem struct {
 	Number             int64
 	Title              string
-	Host               string        // пусто = линия «Ведущий:» не рисуется
-	Guests             []string      // пусто = линия «Гости:» не рисуется
-	GuestsLabel        string        // гости через запятую
-	Description        template.HTML // отрендеренный markdown; пусто = описания нет
-	Summary            string        // короткий текст для списков
-	YouTube            string        // пусто = ссылки нет
+	Hosts              []participantItem // линия «Ведущий:»; пусто = не рисуется
+	Guests             []participantItem // линия «Гости:» в сохранённом порядке
+	HostsText          string            // имена ведущих текстом (архивная строка без вложенных ссылок)
+	GuestsText         string            // имена гостей текстом
+	Description        template.HTML     // отрендеренный markdown; пусто = описания нет
+	Summary            string            // короткий текст для списков
+	YouTube            string            // пусто = ссылки нет
 	DateLabel          string
 	DateISO            string
 	Year               int
@@ -56,6 +64,25 @@ type episodeItem struct {
 	PageURL            string
 	Chapters           []chapterItem
 }
+
+// personItem — данные участника для страницы /people/{slug}.
+type personItem struct {
+	Slug        string
+	Name        string
+	Initial     string // первая буква имени — заглушка вместо аватара
+	HasAvatar   bool
+	AvatarURL   string
+	Description template.HTML // отрендеренный markdown; пусто = описания нет
+}
+
+// personEpisodeItem — выпуск на странице участника: карточка с ролью участника.
+type personEpisodeItem struct {
+	episodeItem
+	RoleLabel string // «Ведущий», «Гость»; пусто = роль не определена
+}
+
+// roleLabels — подписи ролей участника для страницы участника.
+var roleLabels = map[string]string{RoleHost: "Ведущий", RoleGuest: "Гость"}
 
 // pageData — общие данные любой HTML-страницы плюс поля конкретного вида.
 type pageData struct {
@@ -87,6 +114,9 @@ type pageData struct {
 	Latest  *episodeItem
 	Prev    *episodeItem
 	Next    *episodeItem
+
+	Person         *personItem
+	PersonEpisodes []personEpisodeItem
 }
 
 // chapterTime — «0:00», «12:30», «1:02:10»; ноль не пустой, в отличие от humanDuration.
@@ -112,14 +142,56 @@ func pad2(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
+// peopleByName — индекс «имя участника → участник» для связывания выпусков.
+func peopleByName(people []Person) map[string]Person {
+	out := make(map[string]Person, len(people))
+	for _, p := range people {
+		out[p.Name] = p
+	}
+	return out
+}
+
+// participantItems переводит имена участников выпуска в элементы линии:
+// известный участник получает URL страницы (design D5), неизвестный остаётся
+// текстом — имена без сущности не ломают вывод.
+func participantItems(names []string, baseURL string, byName map[string]Person) []participantItem {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]participantItem, 0, len(names))
+	for _, name := range names {
+		item := participantItem{Name: name}
+		if p, ok := byName[name]; ok {
+			item.URL = p.PersonURL(baseURL)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// participantNames — имена из списка участников одной строкой через запятую.
+func participantNames(items []participantItem) string {
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		names = append(names, it.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
 // newEpisodeItem собирает представление эпизода для списков и страницы.
-func newEpisodeItem(v EpisodeView, baseURL string) episodeItem {
+func newEpisodeItem(v EpisodeView, baseURL string, byName map[string]Person) episodeItem {
+	var hosts []participantItem
+	if v.Host != "" {
+		hosts = participantItems([]string{v.Host}, baseURL, byName)
+	}
+	guests := participantItems(v.Guests, baseURL, byName)
 	item := episodeItem{
 		Number:         v.Number,
 		Title:          v.Title,
-		Host:           v.Host,
-		Guests:         v.Guests,
-		GuestsLabel:    strings.Join(v.Guests, ", "),
+		Hosts:          hosts,
+		Guests:         guests,
+		HostsText:      participantNames(hosts),
+		GuestsText:     participantNames(guests),
 		Description:    RenderDescription(v.Description),
 		Summary:        truncateRunes(plainText(v.Description), 220),
 		YouTube:        v.YouTube,
@@ -193,7 +265,8 @@ func basePage(ch Channel, baseURL, kind, path string) pageData {
 }
 
 // buildHomeData — лендинг: промо, три последних выпуска и подборка start_here.
-func buildHomeData(ch Channel, about template.HTML, views []EpisodeView, baseURL string) pageData {
+func buildHomeData(ch Channel, about template.HTML, views []EpisodeView, people []Person, baseURL string) pageData {
+	byName := peopleByName(people)
 	data := basePage(ch, baseURL, "home", "/")
 	data.Title = ch.Title
 	if ch.Tagline != "" {
@@ -204,7 +277,7 @@ func buildHomeData(ch Channel, about template.HTML, views []EpisodeView, baseURL
 
 	items := make([]episodeItem, 0, len(views))
 	for _, v := range views {
-		item := newEpisodeItem(v, baseURL)
+		item := newEpisodeItem(v, baseURL, byName)
 		items = append(items, item)
 		if data.LatestNumber == 0 && item.HasAudio {
 			data.LatestNumber = v.Number
@@ -234,19 +307,21 @@ func buildHomeData(ch Channel, about template.HTML, views []EpisodeView, baseURL
 }
 
 // buildArchiveData — архив всех выпусков с данными для клиентского поиска.
-func buildArchiveData(ch Channel, views []EpisodeView, baseURL string) pageData {
+func buildArchiveData(ch Channel, views []EpisodeView, people []Person, baseURL string) pageData {
+	byName := peopleByName(people)
 	data := basePage(ch, baseURL, "archive", "/episodes")
 	data.Title = "Все выпуски — " + ch.Title
 	data.MetaDescription = "Все выпуски подкаста " + ch.Title + ": " + strconv.Itoa(len(views)) + " записей."
 	for _, v := range views {
-		data.Episodes = append(data.Episodes, newEpisodeItem(v, baseURL))
+		data.Episodes = append(data.Episodes, newEpisodeItem(v, baseURL, byName))
 	}
 	data.Total = len(views)
 	return data
 }
 
 // buildEpisodePageData — страница одного выпуска и его соседи по порядку публикации.
-func buildEpisodePageData(ch Channel, views []EpisodeView, number int64, baseURL string) (pageData, bool) {
+func buildEpisodePageData(ch Channel, views []EpisodeView, people []Person, number int64, baseURL string) (pageData, bool) {
+	byName := peopleByName(people)
 	index := -1
 	for i, v := range views {
 		if v.Number == number {
@@ -257,7 +332,7 @@ func buildEpisodePageData(ch Channel, views []EpisodeView, number int64, baseURL
 	if index < 0 {
 		return pageData{}, false
 	}
-	item := newEpisodeItem(views[index], baseURL)
+	item := newEpisodeItem(views[index], baseURL, byName)
 	data := basePage(ch, baseURL, "episode", "/episodes/"+strconv.FormatInt(number, 10))
 	data.Title = item.Title + " — " + ch.Title
 	data.OGType = "article"
@@ -269,15 +344,56 @@ func buildEpisodePageData(ch Channel, views []EpisodeView, number int64, baseURL
 	data.OGDescription = data.MetaDescription
 	data.Episode = &item
 	if index > 0 {
-		next := newEpisodeItem(views[index-1], baseURL)
+		next := newEpisodeItem(views[index-1], baseURL, byName)
 		data.Next = &next
 	}
 	if index+1 < len(views) {
-		prev := newEpisodeItem(views[index+1], baseURL)
+		prev := newEpisodeItem(views[index+1], baseURL, byName)
 		data.Prev = &prev
 	}
 	data.JSONLD = episodeJSONLD(item, ch, baseURL)
 	return data, true
+}
+
+// buildPersonPageData — страница участника: аватар, имя, описание и выпуски
+// с участием новыми сверху, каждая запись с ролью участника (design D6).
+func buildPersonPageData(ch Channel, p PersonView, views []EpisodeView, roles map[int64]string, people []Person, baseURL string) pageData {
+	byName := peopleByName(people)
+	data := basePage(ch, baseURL, "person", "/people/"+p.Slug)
+	data.Title = p.Name + " — " + ch.Title
+	data.OGTitle = p.Name
+	data.MetaDescription = truncateRunes(plainText(p.Description), 160)
+	if data.MetaDescription == "" {
+		data.MetaDescription = truncateRunes(plainText(ch.Description), 160)
+	}
+	data.OGDescription = data.MetaDescription
+	item := personItem{
+		Slug:        p.Slug,
+		Name:        p.Name,
+		Initial:     personInitial(p.Name),
+		HasAvatar:   p.AvatarExt != "",
+		AvatarURL:   p.AvatarURL(baseURL),
+		Description: RenderDescription(p.Description),
+	}
+	data.Person = &item
+	for _, v := range views {
+		pi := personEpisodeItem{
+			episodeItem: newEpisodeItem(v, baseURL, byName),
+			RoleLabel:   roleLabels[roles[v.Number]],
+		}
+		data.PersonEpisodes = append(data.PersonEpisodes, pi)
+	}
+	return data
+}
+
+// personInitial — первая буква имени в верхнем регистре: заглушка аватара.
+func personInitial(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "?"
+	}
+	r := []rune(name)[0]
+	return strings.ToUpper(string(r))
 }
 
 // handleHome — лендинг канала.
@@ -287,8 +403,24 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
 	ch, about := s.lockContent()
-	s.render(w, "home", buildHomeData(ch, about, views, s.cfg.BaseURL))
+	data := buildHomeData(ch, about, views, personEntities(people), s.cfg.BaseURL)
+	data.Subscribe = ch.Links
+	s.render(w, "home", data)
+}
+
+// personEntities — участники списком сущностей (без выпусков) для шаблонов.
+func personEntities(views []PersonView) []Person {
+	out := make([]Person, 0, len(views))
+	for _, v := range views {
+		out = append(out, v.Person)
+	}
+	return out
 }
 
 // handleArchive — полный архив выпусков.
@@ -298,8 +430,13 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
 	ch, _ := s.lockContent()
-	s.render(w, "episodes", buildArchiveData(ch, views, s.cfg.BaseURL))
+	s.render(w, "episodes", buildArchiveData(ch, views, personEntities(people), s.cfg.BaseURL))
 }
 
 // handleEpisodePage — страница выпуска; неизвестный номер — 404.
@@ -314,13 +451,49 @@ func (s *Server) handleEpisodePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
 	ch, _ := s.lockContent()
-	data, ok := buildEpisodePageData(ch, views, number, s.cfg.BaseURL)
+	data, ok := buildEpisodePageData(ch, views, personEntities(people), number, s.cfg.BaseURL)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	s.render(w, "episode", data)
+}
+
+// handlePersonPage — страница участника; неизвестный slug — 404.
+func (s *Server) handlePersonPage(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	views, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	var person PersonView
+	found := false
+	for _, v := range views {
+		if v.Slug == slug {
+			person = v
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	episodes, roles, err := s.store.PersonEpisodes(slug)
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	ch, _ := s.lockContent()
+	data := buildPersonPageData(ch, person, episodes, roles, personEntities(views), s.cfg.BaseURL)
+	s.render(w, "person", data)
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data pageData) {
@@ -341,6 +514,7 @@ func parsePageTemplates() (map[string]*template.Template, error) {
 		"home":     "home.html",
 		"episodes": "episodes.html",
 		"episode":  "episode.html",
+		"person":   "person.html",
 	}
 	out := make(map[string]*template.Template, len(pages))
 	for name, file := range pages {

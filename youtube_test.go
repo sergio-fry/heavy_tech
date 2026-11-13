@@ -114,7 +114,7 @@ func seedYouTubeEpisodes(t *testing.T, st *Store, count int) {
 			PublishedAt: time.Date(2026, 10, i%28+1, 0, 0, 0, 0, time.UTC),
 		})
 	}
-	if _, _, _, err := st.Sync(found); err != nil {
+	if _, _, _, err := st.Sync(found, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -240,7 +240,7 @@ func TestYouTubeRefreshSkipsUnparsableLink(t *testing.T) {
 		Title:       "Без ссылки",
 		YouTube:     "https://example.com/video",
 		PublishedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-	}}); err != nil {
+	}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls, maxBatch := 0, 0
@@ -278,7 +278,7 @@ func TestYouTubeMetaUpsertAndCascade(t *testing.T) {
 		Title:       "Выпуск 2",
 		YouTube:     "https://youtu.be/vid2",
 		PublishedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
-	}}); err != nil {
+	}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, _, err := st.YouTubeMeta(1); err != sql.ErrNoRows {

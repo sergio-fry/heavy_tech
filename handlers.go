@@ -89,6 +89,10 @@ func NewServer(cfg Config, ch Channel, st *Store) (*Server, error) {
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /episodes", s.handleArchive)
 	mux.HandleFunc("GET /episodes/{number}", s.handleEpisodePage)
+	// Участники: страница /people/{slug} и файл аватара /people/{slug}/avatar.{ext}.
+	// Wildcard {file} занимает целый сегмент, имя файла проверяется по конфигу участника.
+	mux.HandleFunc("GET /people/{slug}", s.handlePersonPage)
+	mux.HandleFunc("GET /people/{slug}/{file}", s.handleAvatar)
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
 	mux.Handle("GET /static/", s.static)
@@ -103,6 +107,7 @@ func NewServer(cfg Config, ch Channel, st *Store) (*Server, error) {
 	mux.HandleFunc("GET /video/{number}/{name}", s.handleMedia(KindVideo))
 	mux.HandleFunc("POST /track/play", s.handlePlay)
 	mux.HandleFunc("GET /api/episodes", s.handleAPI)
+	mux.HandleFunc("GET /api/people", s.handlePeopleAPI)
 	mux.HandleFunc("POST /admin/rescan", s.handleRescan)
 	s.mux = mux
 	return s, nil
@@ -287,20 +292,32 @@ type apiChapter struct {
 	Title string `json:"title"`
 }
 
+// apiParticipant — участник выпуска в машинном представлении. Slug, URL и
+// аватар присутствуют только у участников, описанных в people/ (design D4):
+// host/guests остаются без изменений для старых потребителей API.
+type apiParticipant struct {
+	Role   string `json:"role"` // host | guest
+	Name   string `json:"name"`
+	Slug   string `json:"slug,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Avatar string `json:"avatar,omitempty"`
+}
+
 // apiEpisode — машинное представление эпизода для /api/episodes.
 type apiEpisode struct {
-	Number       int64        `json:"number"`
-	Title        string       `json:"title"`
-	Description  string       `json:"description"` // markdown-исходник
-	Host         string       `json:"host"`        // пустая строка = не указан
-	Guests       []string     `json:"guests"`      // пустой список = не указаны
-	YouTube      string       `json:"youtube"`     // пустая строка = ссылки нет
-	PublishedAt  string       `json:"published_at"`
-	Media        []apiMedia   `json:"media"`
-	Downloads    apiDownloads `json:"downloads"`
-	Plays        int64        `json:"plays"`
-	YouTubeViews int64        `json:"youtube_views"`
-	Chapters     []apiChapter `json:"chapters"`
+	Number       int64            `json:"number"`
+	Title        string           `json:"title"`
+	Description  string           `json:"description"`  // markdown-исходник
+	Host         string           `json:"host"`         // пустая строка = не указан
+	Guests       []string         `json:"guests"`       // пустой список = не указаны
+	Participants []apiParticipant `json:"participants"` // роли участников с сущностями
+	YouTube      string           `json:"youtube"`      // пустая строка = ссылки нет
+	PublishedAt  string           `json:"published_at"`
+	Media        []apiMedia       `json:"media"`
+	Downloads    apiDownloads     `json:"downloads"`
+	Plays        int64            `json:"plays"`
+	YouTubeViews int64            `json:"youtube_views"`
+	Chapters     []apiChapter     `json:"chapters"`
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +326,12 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	byName := peopleByName(personEntities(people))
 	out := make([]apiEpisode, 0, len(views))
 	for _, v := range views {
 		media := make([]apiMedia, 0, len(v.Files))
@@ -329,14 +352,15 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 			chapters = append(chapters, apiChapter{Start: ch.Start, Title: ch.Title})
 		}
 		out = append(out, apiEpisode{
-			Number:      v.Number,
-			Title:       v.Title,
-			Description: v.Description,
-			Host:        v.Host,
-			Guests:      guests,
-			YouTube:     v.YouTube,
-			PublishedAt: v.PublishedAt.Format("2006-01-02"),
-			Media:       media,
+			Number:       v.Number,
+			Title:        v.Title,
+			Description:  v.Description,
+			Host:         v.Host,
+			Guests:       guests,
+			Participants: apiParticipants(v, s.cfg.BaseURL, byName),
+			YouTube:      v.YouTube,
+			PublishedAt:  v.PublishedAt.Format("2006-01-02"),
+			Media:        media,
 			Downloads: apiDownloads{
 				Audio: v.Downloads.Audio,
 				Video: v.Downloads.Video,
@@ -349,6 +373,97 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// apiParticipants собирает участников выпуска в машинном виде: ведущий первым,
+// затем гости в сохранённом порядке; slug/url/avatar только у известных.
+func apiParticipants(v EpisodeView, baseURL string, byName map[string]Person) []apiParticipant {
+	var out []apiParticipant
+	appendParticipant := func(role, name string) {
+		p := apiParticipant{Role: role, Name: name}
+		if person, ok := byName[name]; ok {
+			p.Slug = person.Slug
+			p.URL = person.PersonURL(baseURL)
+			p.Avatar = person.AvatarURL(baseURL)
+		}
+		out = append(out, p)
+	}
+	if v.Host != "" {
+		appendParticipant(RoleHost, v.Host)
+	}
+	for _, guest := range v.Guests {
+		appendParticipant(RoleGuest, guest)
+	}
+	return out
+}
+
+// apiPerson — участник канала в машинном представлении /api/people.
+type apiPerson struct {
+	Slug     string  `json:"slug"`
+	Name     string  `json:"name"`
+	URL      string  `json:"url"`
+	Avatar   string  `json:"avatar,omitempty"`
+	Episodes []int64 `json:"episodes"`
+}
+
+// handlePeopleAPI — машинный список участников канала.
+func (s *Server) handlePeopleAPI(w http.ResponseWriter, r *http.Request) {
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	out := make([]apiPerson, 0, len(people))
+	for _, v := range people {
+		episodes := v.Episodes
+		if episodes == nil {
+			episodes = []int64{}
+		}
+		out = append(out, apiPerson{
+			Slug:     v.Slug,
+			Name:     v.Name,
+			URL:      v.PersonURL(s.cfg.BaseURL),
+			Avatar:   v.AvatarURL(s.cfg.BaseURL),
+			Episodes: episodes,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleAvatar отдаёт файл аватара участника по каноническому имени avatar.{ext}.
+// Имя файла из пути проверяется по конфигу участника: неизвестные файлы и
+// участники — 404, путь собирается из данных индекса, а не из запроса.
+func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	person, err := s.store.PersonBySlug(slug)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	if person.AvatarExt == "" || r.PathValue("file") != "avatar"+person.AvatarExt {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(person.AvatarPath)
+	if err != nil {
+		log.Printf("аватар %s: файл недоступен: %v", slug, err)
+		http.Error(w, "файл аватара недоступен", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "файл аватара недоступен", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", avatarMimeByExt[person.AvatarExt])
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	http.ServeContent(w, r, "avatar"+person.AvatarExt, info.ModTime(), f)
 }
 
 // russianMonths — названия месяцев в родительном падеже; своя «локализация»
