@@ -615,7 +615,7 @@ func TestArchivePage(t *testing.T) {
 		`href="` + testBaseURL + `/episodes/1"`,
 		`class="row-link"`,
 		`aria-label="Прослушиваний и просмотров: 3"`, // 2 скачивания + 1 прослушивание
-		`href="` + testBaseURL + `/episodes/3"`, // выпуск без аудио — переход на страницу есть
+		`href="` + testBaseURL + `/episodes/3"`,      // выпуск без аудио — переход на страницу есть
 		`data-episode="1"`,
 		`data-src="` + testBaseURL + `/audio/1/`,
 		`data-title="Первый выпуск"`,
@@ -1168,6 +1168,166 @@ func TestAllPublic(t *testing.T) {
 		env.server.ServeHTTP(rec, req)
 		if rec.Code >= 400 {
 			t.Fatalf("%s %s -> %d", tc.method, tc.target, rec.Code)
+		}
+	}
+}
+
+// addCoverToEpisode1 — кладёт обложку в папку выпуска 1 и ресканирует индекс.
+func addCoverToEpisode1(t *testing.T, env *testEnv) {
+	t.Helper()
+	writeEpisode(t, env.dir, "1", `title: Первый выпуск
+published_at: 2026-10-01
+description: О чём этот подкаст
+cover: oblozhka.jpg
+audio:
+  file: zapis.aac
+  duration: 1872
+`, map[string]string{
+		"zapis.aac":    strings.Repeat("A", 12345),
+		"oblozhka.jpg": "JPEGBYTES",
+	})
+	if _, _, _, err := SyncPodcastDir(env.dir, env.store); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- обложка выпуска: отдача ---
+
+func TestCoverServing(t *testing.T) {
+	env := newTestEnv(t)
+	addCoverToEpisode1(t, env)
+
+	// именованный URL: 200, правильный Content-Type и тело, кэширование как у статики
+	rec := env.do(t, "GET", "/cover/1/001-pervyy-vypusk.jpg", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d, хотели 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("Content-Type %q, хотели image/jpeg", ct)
+	}
+	if rec.Body.String() != "JPEGBYTES" {
+		t.Fatalf("тело обложки не совпало")
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=300" {
+		t.Fatalf("Cache-Control %q", cc)
+	}
+	if rec.Header().Get("Last-Modified") == "" {
+		t.Fatal("нет Last-Modified")
+	}
+
+	// короткий адрес обслуживается тем же файлом
+	rec = env.do(t, "GET", "/cover/1", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 || rec.Body.String() != "JPEGBYTES" {
+		t.Fatalf("GET /cover/1: код %d", rec.Code)
+	}
+
+	// имя в URL декоративно: любое имя отдаёт обложку
+	rec = env.do(t, "GET", "/cover/1/lyuboe-imya.jpg", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 || rec.Body.String() != "JPEGBYTES" {
+		t.Fatalf("декоративное имя: код %d", rec.Code)
+	}
+
+	// обложка — не носитель: счётчик скачиваний не меняется
+	views, err := env.store.ListEpisodesWithCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range views {
+		if v.Downloads.Total != 0 || v.Plays != 0 {
+			t.Fatalf("счётчики эпизода %d изменились: %+v", v.Number, v.Downloads)
+		}
+	}
+
+	// выпуск без обложки и неизвестный номер — 404
+	if rec := env.do(t, "GET", "/cover/2", "TestUA/1.0", nil, nil); rec.Code != 404 {
+		t.Fatalf("эпизод без обложки: код %d, хотели 404", rec.Code)
+	}
+	if rec := env.do(t, "GET", "/cover/999", "TestUA/1.0", nil, nil); rec.Code != 404 {
+		t.Fatalf("неизвестный эпизод: код %d, хотели 404", rec.Code)
+	}
+}
+
+// --- обложка выпуска: сайт и API ---
+
+func TestCoverInPages(t *testing.T) {
+	env := newTestEnv(t)
+	addCoverToEpisode1(t, env)
+	coverURL := testBaseURL + "/cover/1/001-pervyy-vypusk.jpg"
+
+	// страница выпуска: img обложки, og:image, data-cover и JSON-LD image — обложка выпуска
+	rec := env.do(t, "GET", "/episodes/1", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	html := rec.Body.String()
+	for _, want := range []string{
+		`class="ep-cover" src="` + coverURL + `"`,
+		`property="og:image" content="` + coverURL + `"`,
+		`data-cover="` + coverURL + `"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("на странице выпуска нет %q", want)
+		}
+	}
+	// JSON-LD выпуска содержит image с обложкой
+	if ld := jsonLDBlock(t, html); ld["image"] != coverURL {
+		t.Fatalf("JSON-LD image = %v, хотели %q", ld["image"], coverURL)
+	}
+
+	// страница выпуска без обложки: img нет, og:image/data-cover канальные (в fixtures их нет)
+	rec = env.do(t, "GET", "/episodes/2", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	html = rec.Body.String()
+	if strings.Contains(html, `class="ep-cover"`) {
+		t.Fatal("у выпуска без обложки не должно быть ep-cover")
+	}
+	if strings.Contains(html, `property="og:image"`) {
+		t.Fatal("og:image не должен выводиться без обложек")
+	}
+
+	// архив: миниатюра у выпуска с обложкой, номер у выпуска без
+	rec = env.do(t, "GET", "/episodes", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	html = rec.Body.String()
+	if !strings.Contains(html, `class="row-thumb" src="`+coverURL+`"`) {
+		t.Fatal("в архиве нет миниатюры выпуска с обложкой")
+	}
+	if !strings.Contains(html, `class="row-num"`) {
+		t.Fatal("в архиве пропал номер у выпуска без обложки")
+	}
+
+	// карточка на лендинге: миниатюра рядом с номером
+	rec = env.do(t, "GET", "/", "TestUA/1.0", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `class="card-thumb" src="`+coverURL+`"`) {
+		t.Fatal("на карточке лендинга нет миниатюры")
+	}
+}
+
+func TestCoverInAPI(t *testing.T) {
+	env := newTestEnv(t)
+	addCoverToEpisode1(t, env)
+	rec := env.do(t, "GET", "/api/episodes", "curl/8", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("код %d", rec.Code)
+	}
+	var eps []apiEpisode
+	if err := json.Unmarshal(rec.Body.Bytes(), &eps); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	for _, e := range eps {
+		if e.Number == 1 {
+			if e.Cover != testBaseURL+"/cover/1/001-pervyy-vypusk.jpg" {
+				t.Fatalf("cover эпизода 1: %q", e.Cover)
+			}
+		} else if e.Cover != "" {
+			t.Fatalf("cover эпизода %d: %q, хотели пусто", e.Number, e.Cover)
 		}
 	}
 }

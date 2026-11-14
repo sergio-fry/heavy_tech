@@ -83,6 +83,9 @@ func episodeJSONLD(item episodeItem, ch Channel, baseURL string) template.JS {
 	if item.AudioDurationSecs > 0 {
 		doc["duration"] = isoDuration(item.AudioDurationSecs)
 	}
+	if item.HasCover {
+		doc["image"] = item.CoverURL
+	}
 	if item.HasAudio {
 		doc["associatedMedia"] = map[string]string{
 			"@type":      "AudioObject",

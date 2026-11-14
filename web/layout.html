@@ -60,6 +60,7 @@
 {{define "card"}}
 <article class="card">
   <div class="card-head">
+    {{if .HasCover}}<img class="card-thumb" src="{{.CoverURL}}" alt="" loading="lazy" width="32" height="32">{{end}}
     <span class="num">{{.Number}}</span>
     <span class="meta">{{.DateLabel}}{{if .AudioDurationLabel}} · {{.AudioDurationLabel}}{{end}}{{if .Engagement}} · Прослушиваний и просмотров: {{.Engagement}}{{end}}</span>
   </div>
