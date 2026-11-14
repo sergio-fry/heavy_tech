@@ -123,6 +123,31 @@ h1, h2, h3 { letter-spacing: -.02em; }
 .card .summary { margin: .55rem 0 .9rem; color: var(--text); }
 .card-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
 
+/* страница участника /people/{slug} */
+.person-page { padding: 1rem 0; }
+.person-head { display: flex; gap: 1.1rem; align-items: flex-start; }
+.person-avatar img {
+  width: 96px; height: 96px; border-radius: 18px;
+  border: 1px solid var(--border); object-fit: cover; display: block;
+}
+.person-fallback {
+  width: 96px; height: 96px; border-radius: 18px;
+  background: var(--tile); color: var(--tile-text);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.6rem; font-weight: 800;
+}
+.person-intro h1 { margin: .15rem 0 .5rem; }
+.person-bio { color: var(--text); max-width: 44rem; }
+.person-episodes-title { margin: 1.6rem 0 .9rem; font-size: 1.15rem; }
+.person-card { position: relative; }
+.person-empty { color: var(--muted); padding: 1.5rem 0; }
+
+@media (max-width: 560px) {
+  .person-head { flex-direction: column; }
+  .person-fallback { width: 80px; height: 80px; font-size: 2.1rem; }
+  .person-avatar img { width: 80px; height: 80px; }
+}
+
 .page-head { padding: 1rem 0 1rem; }
 .page-head h1 { margin-bottom: .25rem; }
 .page-head .muted { margin: 0 0 1rem; font-size: .9rem; }

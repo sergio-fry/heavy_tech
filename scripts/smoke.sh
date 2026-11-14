@@ -39,6 +39,10 @@ cp test-fixtures/silent.mp3 "$POD/1/zapis.mp3"
 cat > "$POD/1/episode.yaml" <<'YAML'
 title: Первый выпуск
 published_at: 2026-10-01
+host: Иван Петров
+guests:
+  - Анна Смирнова
+  - Незнакомец Без Профиля
 audio:
   file: zapis.mp3
   duration: 1872
@@ -48,6 +52,22 @@ cat > "$POD/1/description.md" <<'MD'
 
 - вступление
 MD
+
+# Участники: сущности с аватаром и описанием + связь с выпуском по имени.
+mkdir -p "$POD/people/ivan-petrov" "$POD/people/anna-smirnova"
+printf 'fake-png-bytes' > "$POD/people/ivan-petrov/photo.png"
+cat > "$POD/people/ivan-petrov/person.yaml" <<'YAML'
+name: Иван Петров
+avatar: photo.png
+description: будет переопределено файлом
+YAML
+cat > "$POD/people/ivan-petrov/description.md" <<'MD'
+Ведущий и **инженер**.
+MD
+cat > "$POD/people/anna-smirnova/person.yaml" <<'YAML'
+name: Анна Смирнова
+description: Продюсер подкаста.
+YAML
 
 # Выпуск 2: аудио + видео (содержимое синтетическое — сервис его не парсит).
 mkdir -p "$POD/2"
@@ -218,5 +238,53 @@ assert int(count.group(1)) == want, (count.group(1), want)
 assert e1["plays"] == 1, e1
 PY
 
+echo "==> участники: страница /people/{slug}, аватар, API, sitemap, интерактивные имена"
+P_HTML=$(curl -sf "$BASE/people/ivan-petrov") || fail "GET /people/ivan-petrov"
+grep -q "Иван Петров" <<<"$P_HTML" || fail "на странице участника нет имени"
+grep -q 'src="'"$BASE"'/people/ivan-petrov/avatar.png"' <<<"$P_HTML" || fail "на странице участника нет аватара"
+grep -q "Ведущий и <strong>инженер</strong>." <<<"$P_HTML" || fail "описание участника не отрендерено из markdown"
+grep -q "$BASE/episodes/1" <<<"$P_HTML" || fail "на странице участника нет его выпусков"
+grep -q "Ведущий" <<<"$P_HTML" || fail "на странице участника нет роли"
+CT=$(curl -s -o /dev/null -w "%{content_type}" "$BASE/people/ivan-petrov/avatar.png")
+[[ "$CT" == "image/png" ]] || fail "Content-Type аватара: $CT"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/people/anna-smirnova/avatar.png")
+[[ "$CODE" == "404" ]] || fail "аватар у участницы без avatar: код $CODE, хотели 404"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/people/net-takogo")
+[[ "$CODE" == "404" ]] || fail "неизвестный участник: код $CODE, хотели 404"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/people/ivan-petrov/photo.png")
+[[ "$CODE" == "404" ]] || fail "оригинальное имя файла аватара раздаётся: код $CODE, хотели 404"
+curl -sf "$BASE/api/people" | python3 -c '
+import json, sys
+base = sys.argv[1]
+people = json.load(sys.stdin)
+assert [p["slug"] for p in people] == ["anna-smirnova", "ivan-petrov"], people
+ivan = people[1]
+assert ivan["name"] == "Иван Петров", ivan
+assert ivan["url"] == base + "/people/ivan-petrov", ivan
+assert ivan["avatar"] == base + "/people/ivan-petrov/avatar.png", ivan
+assert ivan["episodes"] == [1], ivan
+anna = people[0]
+assert "avatar" not in anna, anna
+assert anna["episodes"] == [1], anna
+' "$BASE" || fail "API участников неожиданный"
+curl -sf "$BASE/api/episodes" | python3 -c '
+import json, sys
+eps = json.load(sys.stdin)
+e1 = next(e for e in eps if e["number"] == 1)
+assert e1["host"] == "Иван Петров", e1
+assert e1["guests"] == ["Анна Смирнова", "Незнакомец Без Профиля"], e1
+p = e1["participants"]
+assert [x["role"] for x in p] == ["host", "guest", "guest"], p
+assert p[0]["slug"] == "ivan-petrov" and p[0]["avatar"].endswith("/avatar.png"), p
+assert p[1]["slug"] == "anna-smirnova" and "avatar" not in p[1], p
+assert "slug" not in p[2] and "url" not in p[2] and p[2]["name"] == "Незнакомец Без Профиля", p
+' || fail "participants в API эпизодов неожиданные"
+EP1_HTML=$(curl -sf "$BASE/episodes/1") || fail "GET /episodes/1"
+grep -q 'href="'"$BASE"'/people/ivan-petrov">Иван Петров</a>' <<<"$EP1_HTML" || fail "ведущий не ссылка на странице выпуска"
+grep -q 'href="'"$BASE"'/people/anna-smirnova">Анна Смирнова</a>' <<<"$EP1_HTML" || fail "гостья не ссылка на странице выпуска"
+grep -q "Незнакомец Без Профиля</a>" <<<"$EP1_HTML" && fail "неизвестный гость стал ссылкой"
+SITEMAP=$(curl -sf "$BASE/sitemap.xml") || fail "GET /sitemap.xml"
+grep -q "<loc>$BASE/people/ivan-petrov</loc>" <<<"$SITEMAP" || fail "в карте сайта нет страницы участника"
+
 echo
-echo "SMOKE OK: оба фида, сайт, API, audio/video Range, бикон по номеру, рескан — всё работает."
+echo "SMOKE OK: оба фида, сайт, API, audio/video Range, бикон по номеру, участники, рескан — всё работает."

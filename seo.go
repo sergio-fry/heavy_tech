@@ -134,8 +134,9 @@ type sitemapDoc struct {
 	URLs    []sitemapURL `xml:"url"`
 }
 
-// BuildSitemap собирает карту сайта: лендинг, архив и страницы выпусков.
-func BuildSitemap(baseURL string, views []EpisodeView) ([]byte, error) {
+// BuildSitemap собирает карту сайта: лендинг, архив, страницы выпусков
+// и страницы участников.
+func BuildSitemap(baseURL string, views []EpisodeView, people []PersonView) ([]byte, error) {
 	doc := sitemapDoc{
 		Xmlns: "http://www.sitemaps.org/schemas/sitemap/0.9",
 		URLs: []sitemapURL{
@@ -148,6 +149,9 @@ func BuildSitemap(baseURL string, views []EpisodeView) ([]byte, error) {
 			Loc:     baseURL + "/episodes/" + strconv.FormatInt(v.Number, 10),
 			LastMod: v.PublishedAt.Format("2006-01-02"),
 		})
+	}
+	for _, p := range people {
+		doc.URLs = append(doc.URLs, sitemapURL{Loc: p.PersonURL(baseURL)})
 	}
 	raw, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -163,7 +167,12 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ошибка базы", http.StatusInternalServerError)
 		return
 	}
-	raw, err := BuildSitemap(s.cfg.BaseURL, views)
+	people, err := s.store.ListPeople()
+	if err != nil {
+		http.Error(w, "ошибка базы", http.StatusInternalServerError)
+		return
+	}
+	raw, err := BuildSitemap(s.cfg.BaseURL, views, people)
 	if err != nil {
 		http.Error(w, "не собрать карту сайта", http.StatusInternalServerError)
 		return

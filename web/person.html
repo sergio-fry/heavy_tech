@@ -1,0 +1,37 @@
+{{define "content"}}
+<article class="person-page">
+  <header class="person-head">
+    <div class="person-avatar">
+      {{if .Person.HasAvatar}}<img src="{{.Person.AvatarURL}}" alt="Аватар: {{.Person.Name}}" width="96" height="96">
+      {{else}}<span class="person-fallback" aria-hidden="true">{{.Person.Initial}}</span>{{end}}
+    </div>
+    <div class="person-intro">
+      <p class="kicker">Участник</p>
+      <h1>{{.Person.Name}}</h1>
+      {{if .Person.Description}}<div class="person-bio">{{.Person.Description}}</div>{{end}}
+    </div>
+  </header>
+
+  {{if .PersonEpisodes}}
+  <h2 class="person-episodes-title">Выпуски с участием · {{len .PersonEpisodes}}</h2>
+  <div class="cards">
+    {{range .PersonEpisodes}}
+    <article class="card person-card">
+      <div class="card-head">
+        <span class="num">{{.Number}}</span>
+        <span class="meta">{{.DateLabel}}{{if .RoleLabel}} · {{.RoleLabel}}{{end}}</span>
+      </div>
+      <h3><a href="{{.PageURL}}">{{.Title}}</a></h3>
+      {{if .Summary}}<p class="summary">{{.Summary}}</p>{{end}}
+      <div class="card-actions">
+        {{if .HasAudio}}<button class="btn btn-primary js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}">Слушать</button>{{end}}
+        <a class="btn" href="{{.PageURL}}">Выпуск</a>
+      </div>
+    </article>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="person-empty">Пока нет выпусков с участием.</p>
+  {{end}}
+</article>
+{{end}}

@@ -90,7 +90,7 @@ func TestStoreParticipantsRoundtrip(t *testing.T) {
 			{Kind: KindAudio, FilePath: "/p/45/a.m4a", Mime: "audio/x-m4a", Size: 100, FileMtime: 111},
 		},
 	}
-	if _, _, _, err := st.Sync([]Episode{ep}); err != nil {
+	if _, _, _, err := st.Sync([]Episode{ep}, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.EpisodeByNumber(45)
@@ -102,11 +102,11 @@ func TestStoreParticipantsRoundtrip(t *testing.T) {
 	}
 
 	// без изменений — no-op; смена участников — обновление
-	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 0 {
+	if _, updated, _, err := st.Sync([]Episode{ep}, nil); err != nil || updated != 0 {
 		t.Fatalf("no-op: updated=%d err=%v", updated, err)
 	}
 	ep.Guests = []string{"Дмитрий Копров"}
-	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+	if _, updated, _, err := st.Sync([]Episode{ep}, nil); err != nil || updated != 1 {
 		t.Fatalf("смена гостей: updated=%d err=%v", updated, err)
 	}
 	if got, _ = st.EpisodeByNumber(45); !slices.Equal(got.Guests, []string{"Дмитрий Копров"}) {
@@ -115,7 +115,7 @@ func TestStoreParticipantsRoundtrip(t *testing.T) {
 
 	// эпизод без участников: в базе пустая строка и пустой список
 	ep.Host, ep.Guests = "", nil
-	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+	if _, updated, _, err := st.Sync([]Episode{ep}, nil); err != nil || updated != 1 {
 		t.Fatalf("снятие участников: updated=%d err=%v", updated, err)
 	}
 	var host, guestsRaw string
@@ -156,7 +156,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 			{Kind: KindVideo, FilePath: "/p/7/v.mp4", Mime: "video/mp4", Size: 900, Resolution: "1920x1080", FileMtime: 222},
 		},
 	}
-	if added, updated, removed, err := st.Sync([]Episode{ep}); err != nil || added != 1 || updated+removed != 0 {
+	if added, updated, removed, err := st.Sync([]Episode{ep}, nil); err != nil || added != 1 || updated+removed != 0 {
 		t.Fatalf("вставка: %d/%d/%d err=%v", added, updated, removed, err)
 	}
 	got, err := st.EpisodeByNumber(7)
@@ -172,7 +172,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 	}
 
 	// повтор без изменений — no-op (идемпотентность)
-	if added, updated, removed, err := st.Sync([]Episode{ep}); err != nil || added+updated+removed != 0 {
+	if added, updated, removed, err := st.Sync([]Episode{ep}, nil); err != nil || added+updated+removed != 0 {
 		t.Fatalf("no-op: %d/%d/%d err=%v", added, updated, removed, err)
 	}
 
@@ -180,7 +180,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 	ep.Title = "Седьмой (обновлён)"
 	ep.YouTube = "https://www.youtube.com/watch?v=xyz"
 	ep.Files[0].Size = 200
-	if added, updated, removed, err := st.Sync([]Episode{ep}); err != nil || added != 0 || updated != 1 || removed != 0 {
+	if added, updated, removed, err := st.Sync([]Episode{ep}, nil); err != nil || added != 0 || updated != 1 || removed != 0 {
 		t.Fatalf("обновление: %d/%d/%d err=%v", added, updated, removed, err)
 	}
 	got, _ = st.EpisodeByNumber(7)
@@ -191,7 +191,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 
 	// снятие ссылки — тоже изменение записи
 	ep.YouTube = ""
-	if _, updated, _, err := st.Sync([]Episode{ep}); err != nil || updated != 1 {
+	if _, updated, _, err := st.Sync([]Episode{ep}, nil); err != nil || updated != 1 {
 		t.Fatalf("снятие youtube: updated=%d err=%v", updated, err)
 	}
 	if got, _ = st.EpisodeByNumber(7); got.YouTube != "" {
@@ -213,7 +213,7 @@ func TestStoreSyncCRUD(t *testing.T) {
 	}
 
 	// удаление эпизода уносит носители и события (CASCADE)
-	if _, _, removed, err := st.Sync(nil); err != nil || removed != 1 {
+	if _, _, removed, err := st.Sync(nil, nil); err != nil || removed != 1 {
 		t.Fatalf("удаление: removed=%d err=%v", removed, err)
 	}
 	if _, err := st.EpisodeByNumber(7); err == nil {

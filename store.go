@@ -114,6 +114,145 @@ type Episode struct {
 	Files       []EpisodeFile
 }
 
+// Роль участника в выпуске.
+const (
+	RoleHost  = "host"
+	RoleGuest = "guest"
+)
+
+// Person — участник канала: сущность с именем (ключ связи с выпусками),
+// описанием и аватаром (design D1). Slug = имя папки в people/.
+type Person struct {
+	Slug        string
+	Name        string
+	Description string // markdown-исходник описания
+	AvatarExt   string // расширение аватара с точкой; пустое = аватара нет
+	AvatarPath  string // путь к файлу аватара в папке участника
+}
+
+// personSelect — общий список колонок участника для SELECT-ов.
+const personSelect = `slug, name, description, avatar_ext, avatar_path`
+
+func scanPersonRow(scan func(dest ...any) error) (Person, error) {
+	var p Person
+	if err := scan(&p.Slug, &p.Name, &p.Description, &p.AvatarExt, &p.AvatarPath); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// AvatarURL — канонический URL аватара участника; пустая строка = аватара нет.
+func (p Person) AvatarURL(baseURL string) string {
+	if p.AvatarExt == "" {
+		return ""
+	}
+	return baseURL + "/people/" + p.Slug + "/avatar" + p.AvatarExt
+}
+
+// PersonURL — канонический URL страницы участника.
+func (p Person) PersonURL(baseURL string) string {
+	return baseURL + "/people/" + p.Slug
+}
+
+// PersonView — участник с номерами выпусков, где он участвует (новые сверху).
+type PersonView struct {
+	Person
+	Episodes []int64
+}
+
+// ListPeople — все участники с их выпусками; порядок по имени — стабильный.
+func (s *Store) ListPeople() ([]PersonView, error) {
+	rows, err := s.db.Query(`SELECT ` + personSelect + ` FROM people ORDER BY name, slug`)
+	if err != nil {
+		return nil, err
+	}
+	var out []PersonView
+	for rows.Next() {
+		p, serr := scanPersonRow(rows.Scan)
+		if serr != nil {
+			rows.Close()
+			return nil, serr
+		}
+		out = append(out, PersonView{Person: p})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// Связи одним запросом: выпуск-страница участника собирается без N+1;
+	// порядок выпуска — новые сверху, как на сайте.
+	links, err := s.db.Query(`SELECT p.slug, p.number
+		FROM episode_people p
+		JOIN episodes e ON e.number = p.number
+		ORDER BY e.published_at DESC, e.number DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer links.Close()
+	index := map[string]int{}
+	for i := range out {
+		index[out[i].Slug] = i
+	}
+	for links.Next() {
+		var slug string
+		var number int64
+		if err := links.Scan(&slug, &number); err != nil {
+			return nil, err
+		}
+		if i, ok := index[slug]; ok {
+			out[i].Episodes = append(out[i].Episodes, number)
+		}
+	}
+	return out, links.Err()
+}
+
+// PersonBySlug — участник по slug; sql.ErrNoRows, если slug неизвестен.
+func (s *Store) PersonBySlug(slug string) (Person, error) {
+	return scanPersonRow(s.db.QueryRow(`SELECT `+personSelect+` FROM people WHERE slug = ?`, slug).Scan)
+}
+
+// PersonEpisodes — выпуски участника (новые сверху) и его роли в них.
+// Если участник в одном выпуске и ведущий, и гость, роль host приоритетна.
+func (s *Store) PersonEpisodes(slug string) ([]EpisodeView, map[int64]string, error) {
+	roles := map[int64]string{}
+	rows, err := s.db.Query(`SELECT number, role FROM episode_people WHERE slug = ? ORDER BY number`, slug)
+	if err != nil {
+		return nil, nil, err
+	}
+	numbers := map[int64]bool{}
+	for rows.Next() {
+		var number int64
+		var role string
+		if err := rows.Scan(&number, &role); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		numbers[number] = true
+		if role == RoleHost || roles[number] == "" {
+			roles[number] = role
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+
+	all, err := s.ListEpisodesWithCounts()
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []EpisodeView
+	for _, v := range all {
+		if numbers[v.Number] {
+			out = append(out, v)
+		}
+	}
+	return out, roles, nil
+}
+
 // episodeSelect — общий список колонок эпизода для SELECT-ов.
 const episodeSelect = `number, title, description, youtube, host, guests, cover, published_at`
 
@@ -439,9 +578,11 @@ func insertFiles(tx *sql.Tx, e Episode) error {
 }
 
 // Sync приводит индекс в соответствие с найденным в папке: добавляет новые,
-// обновляет изменившиеся, удаляет исчезнувшие (CASCADE чистит носители и события).
-// Идемпотентен: повторный вызов без изменений в папке ничего не меняет.
-func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
+// обновляет изменившиеся, удаляет исчезнувшие (CASCADE чистит носители и события);
+// участники (people) обновляются, связи «выпуск ↔ участник» пересчитываются
+// целиком в одной транзакции (design D2). Идемпотентен: повторный вызов без
+// изменений в папке ничего не меняет.
+func (s *Store) Sync(found []Episode, people []Person) (added, updated, removed int, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, 0, 0, err
@@ -545,7 +686,103 @@ func (s *Store) Sync(found []Episode) (added, updated, removed int, err error) {
 		removed++
 	}
 
+	if err = syncPeople(tx, people); err != nil {
+		return 0, 0, 0, err
+	}
+	if err = rebuildEpisodePeople(tx, found, people); err != nil {
+		return 0, 0, 0, err
+	}
+
 	return added, updated, removed, tx.Commit()
+}
+
+// syncPeople синхронизирует таблицу people с найденными в папке участниками:
+// upsert по slug, удаление исчезнувших (CASCADE чистит их связи).
+func syncPeople(tx *sql.Tx, people []Person) error {
+	have := map[string]bool{}
+	rows, err := tx.Query(`SELECT slug FROM people`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			rows.Close()
+			return err
+		}
+		have[slug] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, p := range people {
+		if _, err := tx.Exec(`INSERT INTO people (slug, name, description, avatar_ext, avatar_path)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (slug) DO UPDATE SET
+				name = excluded.name,
+				description = excluded.description,
+				avatar_ext = excluded.avatar_ext,
+				avatar_path = excluded.avatar_path`,
+			p.Slug, p.Name, p.Description, p.AvatarExt, p.AvatarPath); err != nil {
+			return err
+		}
+		have[p.Slug] = true
+	}
+	for slug := range have {
+		known := false
+		for _, p := range people {
+			if p.Slug == slug {
+				known = true
+				break
+			}
+		}
+		if !known {
+			if _, err := tx.Exec(`DELETE FROM people WHERE slug = ?`, slug); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// rebuildEpisodePeople пересобирает связи «выпуск ↔ участник» целиком:
+// имя участника в host/guests выпуска совпадает с name участника (после трима,
+// уже сделанного сканером). Имена без совпадения остаются строками — ошибка
+// не возникает (design D2).
+func rebuildEpisodePeople(tx *sql.Tx, found []Episode, people []Person) error {
+	if _, err := tx.Exec(`DELETE FROM episode_people`); err != nil {
+		return err
+	}
+	byName := make(map[string]string, len(people))
+	for _, p := range people {
+		byName[p.Name] = p.Slug
+	}
+	for _, e := range found {
+		if e.Host != "" {
+			if slug, ok := byName[e.Host]; ok {
+				if _, err := tx.Exec(`INSERT OR IGNORE INTO episode_people (number, slug, role, position)
+					VALUES (?, ?, ?, 0)`, e.Number, slug, RoleHost); err != nil {
+					return err
+				}
+			}
+		}
+		for i, guest := range e.Guests {
+			slug, ok := byName[guest]
+			if !ok {
+				continue
+			}
+			// INSERT OR IGNORE: повтор имени в списке гостей — авторская описка,
+			// связь должна существовать один раз, а не ронять рескан.
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO episode_people (number, slug, role, position)
+				VALUES (?, ?, ?, ?)`, e.Number, slug, RoleGuest, i+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // RecordDownload фиксирует скачивание носителя: сольтированные хеши IP и UA, сутки UTC.

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"html/template"
 )
 
 const testBaseURL = "https://pod.example.com"
@@ -744,7 +746,7 @@ func TestBuildPageData(t *testing.T) {
 	}
 	views := []EpisodeView{videoOnly, second, first}
 	ch := Channel{Title: "Heavy Tech", Description: "О тяжёлом", Image: "https://pod.example.com/cover.jpg"}
-	data := buildHomeData(ch, "", views, testBaseURL)
+	data := buildHomeData(ch, template.HTML(""), views, nil, testBaseURL)
 
 	if data.Title != "Heavy Tech" || data.Description != "О тяжёлом" || !data.HasImage || data.Image != ch.Image {
 		t.Fatalf("метаданные канала: %+v", data)
@@ -796,7 +798,7 @@ func TestBuildPageData(t *testing.T) {
 	}
 
 	// без обложки HasImage=false, без эпизодов LatestNumber 0
-	data = buildHomeData(Channel{Title: "X"}, "", nil, testBaseURL)
+	data = buildHomeData(Channel{Title: "X"}, template.HTML(""), nil, nil, testBaseURL)
 	if data.HasImage || data.Image != "" || data.LatestNumber != 0 || data.Latest != nil {
 		t.Fatalf("пустой канал собран неверно: %+v", data)
 	}
