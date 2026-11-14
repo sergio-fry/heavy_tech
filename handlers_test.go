@@ -570,6 +570,7 @@ video:
 		`class="play js-play"`,
 		`id="inline-player"`,
 		`class="seek js-seek"`,
+		`<span class="js-ico" aria-hidden="true">&#9654;</span>`, // глиф кнопки — в отдельном span для смены иконки из JS
 		"/feed.xml",
 		"/feed-video.xml",
 		`href="` + testBaseURL + `/audio/2/002-vtoroy.mp3"`,
@@ -624,11 +625,16 @@ func TestArchivePage(t *testing.T) {
 		`aria-label="Слушать: Первый выпуск"`,
 		`class="row-btn row-dl" href="` + testBaseURL + `/audio/1/`,
 		`download aria-label="Скачать аудио: Первый выпуск"`,
+		`<span class="js-ico" aria-hidden="true">&#9654;</span>`, // глиф кнопки — в отдельном span, чтобы JS менял иконку, не трогая подпись
+		`class="row-progress js-progress" data-episode="1"`,      // полоса прогресса прослушивания
 		"&#9719;", // глиф часов у длительности
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("в архиве нет %q", want)
 		}
+	}
+	if got := strings.Count(html, "js-progress"); got != 2 {
+		t.Fatalf("полос прогресса %d, хотели 2 (у выпусков с аудио)", got)
 	}
 	// шапка без поиска и фильтров
 	for _, banned := range []string{"id=\"q\"", "<select", "id=\"no-results\"", "data-search", "data-year", "data-guests", "data-video", "Все годы"} {
@@ -913,6 +919,8 @@ func TestHomeHeroBlock(t *testing.T) {
 		`class="cover" src="https://cdn.example.com/cover.jpg"`, // обложка из podcast.yaml
 		`Слушать последний выпуск`,                              // кнопка последнего выпуска
 		`class="btn btn-primary js-play" data-episode="2"`,
+		`<span class="js-ico" aria-hidden="true">&#9654;</span> Слушать последний выпуск`,
+		`class="card-progress js-progress" data-episode="2"`, // полоса прогресса в карточке
 		`<h1>Heavy Tech</h1>`,
 	} {
 		if !strings.Contains(html, want) {

@@ -101,6 +101,7 @@ h1, h2, h3 { letter-spacing: -.02em; }
 .cards { display: grid; gap: 1rem; }
 
 .card {
+  position: relative;
   background: var(--card); border: 1px solid var(--border); border-radius: 16px;
   padding: 1.2rem 1.3rem;
 }
@@ -191,6 +192,17 @@ h1, h2, h3 { letter-spacing: -.02em; }
 }
 .row-btn:hover { border-color: var(--accent); color: var(--accent); }
 .row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Кнопка играющего выпуска */
+.row-btn.is-playing { border-color: var(--accent); color: var(--accent); }
+.btn-primary.is-playing { filter: brightness(1.08); }
+.play.is-playing { filter: brightness(1.12) saturate(1.1); }
+/* Тонкая полоса прогресса прослушивания внизу строки архива и карточки */
+.row-progress, .card-progress {
+  position: absolute; left: 1rem; right: 1rem; bottom: 0; height: 3px;
+  overflow: hidden; border-radius: 3px 3px 0 0; pointer-events: none;
+}
+.card-progress { left: 1.3rem; right: 1.3rem; }
+.progress-fill { display: block; height: 100%; width: 0; background: var(--accent); }
 @media (max-width: 560px) {
   .row { gap: .6rem; padding: .7rem .8rem; }
   .row-count { margin-right: 0; }

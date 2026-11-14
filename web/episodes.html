@@ -16,9 +16,10 @@
     </a>
     <span class="row-actions">
       {{if .Engagement}}<span class="row-count" aria-label="Прослушиваний и просмотров: {{.Engagement}}"><span class="row-ico" aria-hidden="true">&#9654;</span> <span class="row-count-num">{{.Engagement}}</span></span>{{end}}
-      {{if .HasAudio}}<button class="row-btn js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}" aria-label="Слушать: {{.Title}}">&#9654;</button>
+      {{if .HasAudio}}<button class="row-btn js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}" aria-label="Слушать: {{.Title}}"><span class="js-ico" aria-hidden="true">&#9654;</span></button>
       <a class="row-btn row-dl" href="{{.AudioURL}}" download aria-label="Скачать аудио: {{.Title}}">&#10515;</a>{{end}}
     </span>
+    {{if .HasAudio}}<div class="row-progress js-progress" data-episode="{{.Number}}" data-duration="{{.AudioDurationSecs}}" aria-hidden="true" hidden><span class="progress-fill"></span></div>{{end}}
   </div>
   {{end}}
 </div>

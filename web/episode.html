@@ -13,7 +13,7 @@
 
   {{if .Episode.HasAudio}}
   <section class="player" id="inline-player">
-    <button class="play js-play" data-episode="{{.Episode.Number}}" data-src="{{.Episode.AudioURL}}" data-title="{{.Episode.Title}}" data-duration="{{.Episode.AudioDurationSecs}}" aria-label="Слушать: {{.Episode.Title}}">&#9654;</button>
+    <button class="play js-play" data-episode="{{.Episode.Number}}" data-src="{{.Episode.AudioURL}}" data-title="{{.Episode.Title}}" data-duration="{{.Episode.AudioDurationSecs}}" aria-label="Слушать: {{.Episode.Title}}"><span class="js-ico" aria-hidden="true">&#9654;</span></button>
     <div class="seek-wrap">
       <input class="seek js-seek" type="range" min="0" max="{{if .Episode.AudioDurationSecs}}{{.Episode.AudioDurationSecs}}{{else}}100{{end}}" value="0" step="1" aria-label="Перемотка: {{.Episode.Title}}" aria-valuetext="0:00">
       {{if .Episode.Chapters}}<div class="marks" aria-hidden="true">{{range .Episode.Chapters}}<span class="mark" style="left:{{printf "%.2f" .Percent}}%"></span>{{end}}</div>{{end}}

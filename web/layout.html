@@ -40,7 +40,7 @@
 <audio id="player" preload="none"></audio>
 
 <div class="mini" id="mini" hidden>
-  <button class="play js-play" id="mini-play" aria-label="Пауза">&#9654;</button>
+  <button class="play js-play" id="mini-play" aria-label="Пауза"><span class="js-ico" aria-hidden="true">&#9654;</span></button>
   <div class="mini-body">
     <div class="mini-title" id="mini-title"></div>
     <div class="mini-row">
@@ -71,9 +71,10 @@
   {{if .Guests}}<div class="people">Гости: {{template "participant-list" .Guests}}</div>{{end}}
   {{if .Summary}}<p class="summary">{{.Summary}}</p>{{end}}
   <div class="card-actions">
-    {{if .HasAudio}}<button class="btn btn-primary js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}">Слушать</button>{{end}}
+    {{if .HasAudio}}<button class="btn btn-primary js-play" data-episode="{{.Number}}" data-src="{{.AudioURL}}" data-title="{{.Title}}" data-duration="{{.AudioDurationSecs}}"><span class="js-ico" aria-hidden="true">&#9654;</span> Слушать</button>{{end}}
     <a class="btn" href="{{.PageURL}}">Выпуск</a>
     {{if .YouTube}}<a class="btn" href="{{.YouTube}}" target="_blank" rel="noopener noreferrer">YouTube</a>{{end}}
   </div>
+  {{if .HasAudio}}<div class="card-progress js-progress" data-episode="{{.Number}}" data-duration="{{.AudioDurationSecs}}" aria-hidden="true" hidden><span class="progress-fill"></span></div>{{end}}
 </article>
 {{end}}
